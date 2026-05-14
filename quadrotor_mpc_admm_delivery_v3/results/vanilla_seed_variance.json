@@ -1,0 +1,66 @@
+[
+  {
+    "seed": 42,
+    "variant": "BC",
+    "ss_mm": Infinity,
+    "full_mm": 118.1,
+    "survived": false,
+    "n_steps": null
+  },
+  {
+    "seed": 42,
+    "variant": "DAgger",
+    "ss_mm": Infinity,
+    "full_mm": 58.8,
+    "survived": false,
+    "n_steps": null
+  },
+  {
+    "seed": 7,
+    "variant": "BC",
+    "ss_mm": Infinity,
+    "full_mm": 306.2075850639789,
+    "survived": false,
+    "n_steps": 173
+  },
+  {
+    "seed": 7,
+    "variant": "DAgger",
+    "ss_mm": Infinity,
+    "full_mm": 58.52153272578564,
+    "survived": false,
+    "n_steps": 9
+  },
+  {
+    "seed": 123,
+    "variant": "BC",
+    "ss_mm": 728.856458684042,
+    "full_mm": 330.9823376318887,
+    "survived": true,
+    "n_steps": 221
+  },
+  {
+    "seed": 123,
+    "variant": "DAgger",
+    "ss_mm": 3.7955677506551857,
+    "full_mm": 19.79348968413968,
+    "survived": true,
+    "n_steps": 1000
+  },
+  {
+    "seed": 2026,
+    "variant": "BC",
+    "ss_mm": Infinity,
+    "full_mm": 280.35588664991576,
+    "survived": false,
+    "n_steps": 186
+  },
+  {
+    "seed": 2026,
+    "variant": "DAgger",
+    "ss_mm": Infinity,
+    "full_mm": 63.11368456843002,
+    "survived": false,
+    "n_steps": 10
+  }
+]

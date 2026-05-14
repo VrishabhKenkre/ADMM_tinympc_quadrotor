@@ -1,0 +1,28 @@
+{
+  "task": "OSQP hyperparameter sweep on linear quadrotor MPC, fig-8 closed-loop",
+  "qp_dimensions": {
+    "decision_vars": 332,
+    "states": 252,
+    "controls": 80,
+    "constraints": 584,
+    "H_nnz": 3344,
+    "H_density": 0.030,
+    "A_nnz": 1344,
+    "A_density": 0.007,
+    "formulation": "sparse (states explicit)"
+  },
+  "pareto_frontier": [
+    {"eps_abs": 1e-2, "eps_rel": 1e-2, "polish": false, "max_iter": 500, "scaling": 10, "rmse_mm": 4.85, "median_us": 351.2, "iters": 25, "status": "OK"},
+    {"eps_abs": 1e-2, "eps_rel": 1e-2, "polish": false, "max_iter": 50,  "scaling": 10, "rmse_mm": 4.85, "median_us": 351.7, "iters": 25, "status": "OK"},
+    {"eps_abs": 1e-5, "eps_rel": 1e-5, "polish": false, "max_iter": 500, "scaling": 10, "rmse_mm": 4.87, "median_us": 351.9, "iters": 25, "status": "OK"},
+    {"eps_abs": 1e-3, "eps_rel": 1e-3, "polish": false, "max_iter": 500, "scaling": 25, "rmse_mm": 4.87, "median_us": 352.2, "iters": 25, "status": "OK"},
+    {"eps_abs": 1e-3, "eps_rel": 1e-3, "polish": false, "max_iter": 100, "scaling": 10, "rmse_mm": 4.87, "median_us": 352.5, "iters": 25, "status": "OK"}
+  ],
+  "key_findings": [
+    "OSQP floors at ~352us / 4.85mm on this MPC problem regardless of tuning",
+    "Per-iteration cost (~14us at 25 iters) dominates and cannot be reduced",
+    "Tight tolerances (1e-4, 1e-5) with low max_iter cause widespread failures",
+    "polish=False required for real-time use",
+    "eps_abs=1e-2, polish=False, max_iter=50, scaling=10 is the speed-optimal Pareto point"
+  ]
+}

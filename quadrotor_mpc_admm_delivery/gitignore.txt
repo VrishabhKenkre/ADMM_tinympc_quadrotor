@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.pytest_cache/
+
+# C build artifacts
+*.so
+*.o
+*.a
+src/build/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Training artifacts (push only the final small policy weights, not all checkpoints)
+runs/
+wandb/
+checkpoints/
+*.tfevents.*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# MuJoCo Menagerie — clone separately or as submodule
+mujoco_menagerie/
+
+# Personal notes
+NOTES.md
+TODO.md
+*.draft

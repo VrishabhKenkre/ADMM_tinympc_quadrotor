@@ -1,0 +1,162 @@
+[
+  {
+    "seed": 42,
+    "variant": "BC + DART (fixed \u03c3=0.1)",
+    "ss_mm": 77.32880020045661,
+    "full_mm": 72.27295178559919,
+    "survived": true,
+    "n_steps": 1000
+  },
+  {
+    "seed": 42,
+    "variant": "BC + DART (adaptive \u03a3\u0302)",
+    "ss_mm": 11.039483079000926,
+    "full_mm": 22.05141752984403,
+    "survived": true,
+    "n_steps": 1000
+  },
+  {
+    "seed": 7,
+    "variant": "BC + DART (fixed \u03c3=0.1)",
+    "ss_mm": 13.674799373638754,
+    "full_mm": 24.275254826394995,
+    "survived": true,
+    "n_steps": 1000
+  },
+  {
+    "seed": 7,
+    "variant": "BC + DART (adaptive \u03a3\u0302)",
+    "ss_mm": 5.135850077988983,
+    "full_mm": 20.349408406215098,
+    "survived": true,
+    "n_steps": 1000
+  },
+  {
+    "seed": 123,
+    "variant": "BC + DART (fixed \u03c3=0.1)",
+    "ss_mm": 26.417385632356808,
+    "full_mm": 32.589693403405256,
+    "survived": true,
+    "n_steps": 1000
+  },
+  {
+    "seed": 123,
+    "variant": "BC + DART (adaptive \u03a3\u0302)",
+    "ss_mm": 5.74465937959357,
+    "full_mm": 21.188870966896577,
+    "survived": true,
+    "n_steps": 1000
+  },
+  {
+    "seed": 2026,
+    "variant": "BC + DART (fixed \u03c3=0.1)",
+    "ss_mm": 45.8291868850641,
+    "full_mm": 46.15182604173092,
+    "survived": true,
+    "n_steps": 1000
+  },
+  {
+    "seed": 2026,
+    "variant": "BC + DART (adaptive \u03a3\u0302)",
+    "ss_mm": 6.5710136170638584,
+    "full_mm": 20.318269482541886,
+    "survived": true,
+    "n_steps": 1000
+  },
+  {
+    "seed": 999,
+    "variant": "BC + DART (fixed \u03c3=0.1)",
+    "ss_mm": 18.479492157724202,
+    "full_mm": 25.86414104718638,
+    "survived": true,
+    "n_steps": 1000
+  },
+  {
+    "seed": 999,
+    "variant": "BC + DART (adaptive \u03a3\u0302)",
+    "ss_mm": 9.923304403444842,
+    "full_mm": 21.430004745911187,
+    "survived": true,
+    "n_steps": 1000
+  },
+  {
+    "seed": 42,
+    "variant": "DAgger + DART (fixed \u03c3=0.1)",
+    "ss_mm": 3.766446390515054,
+    "full_mm": 19.505956073930506,
+    "survived": true,
+    "n_steps": 1000
+  },
+  {
+    "seed": 42,
+    "variant": "DAgger + DART (adaptive \u03a3\u0302)",
+    "ss_mm": 3.627578599847337,
+    "full_mm": 19.459669123782568,
+    "survived": true,
+    "n_steps": 1000
+  },
+  {
+    "seed": 7,
+    "variant": "DAgger + DART (fixed \u03c3=0.1)",
+    "ss_mm": 3.718095441611971,
+    "full_mm": 19.60679385025275,
+    "survived": true,
+    "n_steps": 1000
+  },
+  {
+    "seed": 7,
+    "variant": "DAgger + DART (adaptive \u03a3\u0302)",
+    "ss_mm": 3.7495032950523703,
+    "full_mm": 19.565374210409065,
+    "survived": true,
+    "n_steps": 1000
+  },
+  {
+    "seed": 123,
+    "variant": "DAgger + DART (fixed \u03c3=0.1)",
+    "ss_mm": 3.6920995412149047,
+    "full_mm": 19.385781102651784,
+    "survived": true,
+    "n_steps": 1000
+  },
+  {
+    "seed": 123,
+    "variant": "DAgger + DART (adaptive \u03a3\u0302)",
+    "ss_mm": 3.992826789172712,
+    "full_mm": 19.537895856171232,
+    "survived": true,
+    "n_steps": 1000
+  },
+  {
+    "seed": 2026,
+    "variant": "DAgger + DART (fixed \u03c3=0.1)",
+    "ss_mm": 3.875089098482197,
+    "full_mm": 19.301531997140515,
+    "survived": true,
+    "n_steps": 1000
+  },
+  {
+    "seed": 2026,
+    "variant": "DAgger + DART (adaptive \u03a3\u0302)",
+    "ss_mm": 3.4517523451526873,
+    "full_mm": 19.36650415616388,
+    "survived": true,
+    "n_steps": 1000
+  },
+  {
+    "seed": 999,
+    "variant": "DAgger + DART (fixed \u03c3=0.1)",
+    "ss_mm": 4.066990376799761,
+    "full_mm": 19.955575288573076,
+    "survived": true,
+    "n_steps": 1000
+  },
+  {
+    "seed": 999,
+    "variant": "DAgger + DART (adaptive \u03a3\u0302)",
+    "ss_mm": 3.6920996002628796,
+    "full_mm": 19.58405664980122,
+    "survived": true,
+    "n_steps": 1000
+  }
+]

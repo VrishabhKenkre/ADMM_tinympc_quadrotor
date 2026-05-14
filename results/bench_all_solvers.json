@@ -1,0 +1,50 @@
+[
+  {
+    "solver": "C ADMM",
+    "trajectory": "fig8",
+    "rmse_mm": 3.421949417371686,
+    "median_us": 16.61,
+    "p95_us": 24.682499999999997,
+    "mean_iters": 4.5465
+  },
+  {
+    "solver": "OSQP",
+    "trajectory": "fig8",
+    "rmse_mm": 4.864863592857881,
+    "median_us": 352.0529717206955,
+    "p95_us": 376.92906334996223,
+    "mean_iters": 25.025
+  },
+  {
+    "solver": "ReLU-QP",
+    "trajectory": "fig8",
+    "rmse_mm": 4.85269443728464,
+    "median_us": 1841.6810780763626,
+    "p95_us": 1875.418983399868,
+    "mean_iters": 25.1625
+  },
+  {
+    "solver": "C ADMM",
+    "trajectory": "helix",
+    "rmse_mm": 3.790036075628768,
+    "median_us": 12.51,
+    "p95_us": 16.19145,
+    "mean_iters": 3.4325
+  },
+  {
+    "solver": "OSQP",
+    "trajectory": "helix",
+    "rmse_mm": 5.101767443832775,
+    "median_us": 357.11750388145447,
+    "p95_us": 379.07855585217476,
+    "mean_iters": 25.025
+  },
+  {
+    "solver": "ReLU-QP",
+    "trajectory": "helix",
+    "rmse_mm": 5.087865518100425,
+    "median_us": 1820.3314393758774,
+    "p95_us": 1859.0242601931095,
+    "mean_iters": 25.275
+  }
+]

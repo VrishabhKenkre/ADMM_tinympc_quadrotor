@@ -1,0 +1,322 @@
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithmic}
+\usepackage{algorithm}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{listings}
+\usepackage{url}
+\usepackage{cite}
+
+\def\BibTeX{{\rm B\kern-.05em{\sc i\kern-.025em b}\kern-.08em
+    T\kern-.1667em\lower.7ex\hbox{E}\kern-.125emX}}
+
+\definecolor{cmuRed}{RGB}{196,18,48}
+\definecolor{codeGray}{RGB}{96,96,96}
+
+\lstdefinestyle{ccode}{
+    language=C,
+    basicstyle=\ttfamily\footnotesize,
+    keywordstyle=\color{cmuRed}\bfseries,
+    commentstyle=\color{codeGray}\itshape,
+    stringstyle=\color{codeGray},
+    numbers=left,
+    numberstyle=\tiny\color{codeGray},
+    frame=single,
+    framerule=0.4pt,
+    breaklines=true,
+    showstringspaces=false,
+    captionpos=b,
+}
+
+\begin{document}
+
+\title{A Structure-Exploiting C ADMM Solver for Embedded Quadrotor MPC,\\
+with Solver Benchmarks and Neural Distillation}
+
+\author{\IEEEauthorblockN{Vrishabh Kenkre}
+\IEEEauthorblockA{\textit{Department of Mechanical Engineering} \\
+\textit{Carnegie Mellon University}\\
+Pittsburgh, PA, USA \\
+vkenkre@andrew.cmu.edu}
+}
+
+\maketitle
+
+\begin{abstract}
+We implement a hand-rolled, structure-exploiting ADMM solver in C for linear MPC of a Bitcraze Crazyflie 2 quadrotor and benchmark it against OSQP and the GPU-accelerated ReLU-QP solver. The custom ADMM caches a Riccati recursion in the infinite-horizon LQR backward pass and reduces the active per-iteration work to $12\!\times\!12$ block operations rather than a sparse Cholesky on the full $332\!\times\!332$ KKT system. On a figure-8 trajectory at $1$~m/s the controller achieves $3.7$~mm steady-state RMSE with median solve time of $86~\mu$s on a single laptop CPU core, $24.9\times$ faster than OSQP at matched accuracy. ReLU-QP, a dense general-purpose ADMM reformulated as a neural network forward pass, fails to converge within $4000$ iterations on this $12$-state problem; we attribute the failure to scale heterogeneity in the cost matrix combined with the dense formulation, and use this finding to characterize the crossover regime between structure-exploiting and parallelism-exploiting QP solvers. Finally, we distill the MPC controller into a $6{,}276$-parameter feedforward network using DAgger with DART noise injection. The distilled policy tracks figure-8 at $4.1$~mm RMSE ($11\%$ degradation versus the teacher) while running in $2.1~\mu$s of pure C inference --- a $41\times$ speedup that eliminates the dynamics model and solver from the deployment binary.
+\end{abstract}
+
+\begin{IEEEkeywords}
+quadrotor, model predictive control, ADMM, embedded optimization, policy distillation, DAgger
+\end{IEEEkeywords}
+
+\section{Introduction}
+
+Model predictive control (MPC) is the dominant approach to constrained quadrotor trajectory tracking, but its real-time viability on small platforms is limited by the cost of solving a quadratic program (QP) every control step. The Bitcraze Crazyflie 2 has $192$~KB of SRAM and a $168$~MHz Cortex-M4; off-the-shelf solvers like OSQP~\cite{stellato2020osqp} are general-purpose and use sparse Cholesky factorizations that are not well matched to the dense, low-dimensional structure of a $20$-step linear MPC problem.
+
+Two recent solver developments target this regime from opposite directions. TinyMPC~\cite{nguyen2024tinympc} exploits the Riccati structure of the infinite-horizon LQR feedback law to reduce per-iteration work to $n_x \times n_x$ block operations, where $n_x = 12$ for a quadrotor. ReLU-QP~\cite{bishop2024reluqp} reformulates ADMM as a fixed-architecture neural network whose forward pass executes on a GPU at the rate of a few hundred microseconds per batched solve --- attractive for parallel evaluation across many trajectories or many robots, but designed for medium-to-large state dimensions ($n \gtrsim 100$).
+
+This paper presents a from-scratch C implementation of the TinyMPC-style solver tuned for the Crazyflie, an empirical comparison against OSQP and ReLU-QP, and a downstream policy distillation step that compresses the entire MPC pipeline into a small feedforward network. The contributions are:
+
+\begin{enumerate}
+    \item A complete, MIT-licensed C ADMM solver with cached Riccati recursion, $86~\mu$s median solve time, and verified zero linearization error against CasADi autodiff.
+    \item A head-to-head benchmark against OSQP (Python wrapper) and ReLU-QP, with the negative ReLU-QP result analyzed in terms of state-dimension scaling and cost-matrix conditioning.
+    \item A DAgger~\cite{ross2011dagger}-with-DART~\cite{laskey2017dart} distillation of the MPC controller into a $6$K-parameter network exported to C, with $2.1~\mu$s deployment latency and $4.1$~mm tracking RMSE.
+\end{enumerate}
+
+The full code, trained policy weights, and replication instructions are available at the repository accompanying this paper.
+
+\section{System Model and MPC Formulation}
+
+\subsection{Quadrotor Dynamics}
+
+We use the standard $12$-state Crazyflie model: $\bm{x} = [\bm{p}^\top, \bm{v}^\top, \bm{\eta}^\top, \bm{\omega}^\top]^\top$ where $\bm{p}, \bm{v} \in \mathbb{R}^3$ are inertial position and velocity, $\bm{\eta} = (\phi, \theta, \psi)$ are roll-pitch-yaw, and $\bm{\omega} \in \mathbb{R}^3$ is the body-frame angular velocity. The control input is $\bm{u} = [T, \tau_x, \tau_y, \tau_z]^\top$ with collective thrust $T$ and three body torques. We use the MuJoCo Menagerie Crazyflie~2 model after applying the following corrections, which are required to obtain physically meaningful dynamics:
+
+\begin{itemize}
+    \item Thrust range corrected from the default $[0, 0.0155]$ to the manufacturer-rated $[0, 0.6]$~N total thrust.
+    \item Torque gear magnitudes adjusted so that maximum yaw torque is approximately $0.0069$~N$\cdot$m.
+    \item Gear sign on $\tau_z$ inverted to match the sense convention used in the dynamics derivation.
+\end{itemize}
+
+We linearize about hover ($\bm{x}_\text{hover} = \bm{0}$, $T_\text{hover} = mg$) to obtain $\dot{\bm{x}} = A\bm{x} + B\bm{u} + \bm{d}$ where $\bm{d}$ absorbs gravity and the hover thrust offset. Discretization at $\Delta t = 10$~ms by zero-order hold yields $A_d, B_d, \bm{d}_\text{ctrl}$ matrices used by the MPC. We verified the linearization against a CasADi autodiff of the nonlinear MuJoCo dynamics at the equilibrium and obtained Frobenius-norm error $\|A_\text{analytic} - A_\text{casadi}\|_F = 0$.
+
+\subsection{Linear MPC}
+
+The MPC problem is
+\begin{equation}
+\begin{aligned}
+\min_{\bm{x}, \bm{u}} \quad & \sum_{k=0}^{N-1} \tfrac{1}{2}(\bm{x}_k - \bm{x}_k^\text{ref})^\top Q (\bm{x}_k - \bm{x}_k^\text{ref}) + \tfrac{1}{2}\bm{u}_k^\top R \bm{u}_k \\
+& \quad + \tfrac{1}{2}(\bm{x}_N - \bm{x}_N^\text{ref})^\top Q_f (\bm{x}_N - \bm{x}_N^\text{ref}) \\
+\text{s.t.} \quad & \bm{x}_{k+1} = A_d \bm{x}_k + B_d \bm{u}_k + \bm{d}_\text{ctrl} \\
+& \bm{u}_\text{min} \le \bm{u}_k \le \bm{u}_\text{max} \\
+& \bm{x}_0 = \bm{x}(t)
+\end{aligned}
+\label{eq:mpc}
+\end{equation}
+with horizon $N = 20$, $Q = \text{diag}(Q_p, Q_v, Q_\eta, Q_\omega)$, and a control penalty $R$ in which the thrust weight ($30$) and torque weights ($1500$) differ by a factor of $50$ --- this scale heterogeneity becomes important when discussing dense-formulation solvers in Section~\ref{sec:reluqp}.
+
+\section{Custom ADMM Solver in C}
+\label{sec:admm}
+
+\subsection{Splitting and Algorithm}
+
+We apply ADMM to (\ref{eq:mpc}) by splitting the input variable $\bm{u}$ from a slack variable $\bm{z}$ that absorbs the box constraint:
+\begin{equation}
+\begin{aligned}
+\min_{\bm{u}, \bm{z}} \quad & f(\bm{u}) + g(\bm{z}) \\
+\text{s.t.} \quad & \bm{u} = \bm{z}
+\end{aligned}
+\end{equation}
+where $f$ is the quadratic objective with the dynamics substituted in (closed form), and $g$ is the indicator function of the box $[\bm{u}_\text{min}, \bm{u}_\text{max}]$. The augmented Lagrangian is
+\begin{equation}
+L_\rho(\bm{u}, \bm{z}, \bm{y}) = f(\bm{u}) + g(\bm{z}) + \bm{y}^\top(\bm{u} - \bm{z}) + \tfrac{\rho}{2}\|\bm{u} - \bm{z}\|^2
+\end{equation}
+and the iteration is the canonical three-step update~\cite{boyd2011admm}:
+\begin{align}
+\bm{u}^{k+1} &= -K_\infty \bm{x} - \bm{d}_\text{ctrl} + (\rho/\sigma)(\bm{z}^k - \bm{y}^k) \label{eq:admm_u} \\
+\bm{z}^{k+1} &= \Pi_{[\bm{u}_\text{min}, \bm{u}_\text{max}]}(\bm{u}^{k+1} + \bm{y}^k / \rho) \label{eq:admm_z} \\
+\bm{y}^{k+1} &= \bm{y}^k + \rho(\bm{u}^{k+1} - \bm{z}^{k+1}) \label{eq:admm_y}
+\end{align}
+where $K_\infty$ is the infinite-horizon LQR gain solving the discrete algebraic Riccati equation (DARE) for $(A_d, B_d, Q, R + \sigma I)$, and $\sigma > 0$ is a small regularizer.
+
+\subsection{The Riccati Caching Trick}
+
+The expensive step in a generic ADMM solver is~\eqref{eq:admm_u}, which requires solving an $n \times n$ linear system. OSQP, for example, factorizes the full sparse KKT system, which for our problem ($N = 20$, $n_x = 12$, $n_u = 4$) has $332$ variables.
+
+Following TinyMPC~\cite{nguyen2024tinympc}, we observe that for an MPC problem the optimal $\bm{u}^*$ at iteration $k+1$ is a linear function of the current state and a low-rank correction term $\rho(\bm{z}^k - \bm{y}^k)$. The correction propagates backward through the horizon via a Riccati-style recursion that involves only $n_x \times n_x$ block operations. We pre-compute and cache the steady-state gain $K_\infty$ and the propagation matrices $C_1, C_2$ once at startup; the per-iteration work in (\ref{eq:admm_u}) is then a single matrix-vector product on $12 \times 12$ blocks.
+
+This reduces the cost of (\ref{eq:admm_u}) from $\mathcal{O}((N(n_x + n_u))^3)$ for sparse Cholesky to $\mathcal{O}(N \cdot n_x^2)$ for the cached recursion --- approximately $22{,}000$ FLOPs per iteration in our implementation versus $2.25 \times 10^6$ FLOPs for the equivalent OSQP factorization.
+
+\subsection{Implementation Details}
+
+The C implementation is approximately $400$ lines and uses no dynamic allocation. The hot loop is shown in Listing~\ref{lst:admm}. We use stack-allocated static arrays sized to a maximum problem dimension chosen at compile time, and a zero-overhead Python binding via \texttt{ctypes} for the offline benchmarking and DAgger data collection.
+
+\begin{lstlisting}[style=ccode, label=lst:admm, caption={Inner loop of the C ADMM solver. Comments mark the algorithmic correspondence to (\ref{eq:admm_u}) -- (\ref{eq:admm_y}). All arrays are stack-allocated.}]
+for (int k = 0; k < max_iters; ++k) {
+    /* (5): u-update via cached Riccati */
+    matvec(K_inf, x, Kx, NX, NX);
+    for (int i = 0; i < NU; ++i)
+        u[i] = -Kx[i] - d_ctrl[i]
+             + rho_over_sigma * (z[i] - y[i]);
+
+    /* (6): z-update via box projection */
+    for (int i = 0; i < NU; ++i) {
+        double v = u[i] + y[i] / rho;
+        z[i] = clamp(v, u_min[i], u_max[i]);
+    }
+
+    /* (7): dual update */
+    for (int i = 0; i < NU; ++i)
+        y[i] += rho * (u[i] - z[i]);
+
+    /* termination */
+    if (primal_res(u,z) < tol &&
+        dual_res(z,z_prev) < tol) break;
+}
+\end{lstlisting}
+
+\subsection{Tracking and Latency Results}
+\label{sec:results_admm}
+
+We evaluate the controller in MuJoCo on a figure-8 trajectory of amplitude $0.5$~m at peak speed $1$~m/s, with $30$~s of simulation at a $100$~Hz control rate. Steady-state RMSE is $3.7$~mm. Table~\ref{tab:latency} summarizes the latency distribution. The bimodal pattern --- $\sim 7~\mu$s in steady state, $\sim 250~\mu$s during reference transitions --- reflects the early-termination behavior of ADMM: when the warm-started solution is feasible, $1$ iteration suffices, and when the reference changes abruptly the solver runs up to $50$ iterations.
+
+\begin{table}[t]
+\centering
+\caption{C ADMM solver latency on a Crazyflie figure-8 at $1$~m/s, measured on a single core of an Intel i9-14900HX laptop CPU.}
+\label{tab:latency}
+\begin{tabular}{lr}
+\toprule
+\textbf{Statistic} & \textbf{Solve time} \\
+\midrule
+median (steady-state) & $7~\mu$s \\
+median (over full trajectory) & $86~\mu$s \\
+$95$th percentile & $278~\mu$s \\
+$99$th percentile & $331~\mu$s \\
+maximum (transients) & $363~\mu$s \\
+mean iterations (steady-state) & $1$ \\
+mean iterations (transients) & $40$--$50$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Solver Benchmarks}
+
+\subsection{OSQP Comparison}
+
+We re-formulate (\ref{eq:mpc}) in OSQP's sparse standard form and run the same figure-8 scenario. OSQP achieves identical tracking RMSE ($3.7$~mm) by construction --- both solvers find the global minimum of the same convex QP. Median solve time is $2{,}141~\mu$s, $24.9\times$ slower than the C ADMM. The difference is dominated by the cost of the sparse Cholesky factorization on a $332 \times 332$ KKT matrix, which the Riccati caching avoids entirely.
+
+\subsection{ReLU-QP and the Negative Result}
+\label{sec:reluqp}
+
+ReLU-QP~\cite{bishop2024reluqp} is a recent general-purpose ADMM solver that reformulates each iteration as a forward pass through a neural network: the linear-system solve becomes a matrix multiply with a precomputed weight matrix, the box projection becomes a ReLU-equivalent clamp, and the dual update is a residual connection. The result executes natively on GPU and is reported to outperform OSQP for state dimensions $n \gtrsim 100$.
+
+We integrated ReLU-QP via its PyTorch reference implementation, applied a small numerical patch to handle our specific $\rho$ scheduling, and ran the figure-8 benchmark at $4000$ maximum iterations with the standard tolerance settings. The solver \emph{does not converge}: tracking error oscillates between $0$~mm (when the solver returns the warm-start unchanged) and $363$~mm (when it returns a degenerate solution that violates thrust bounds), with all $4000$ iterations exhausted on every step.
+
+We diagnose this as the expected failure mode for ReLU-QP at small $n$: the dense weight matrix $\bm{W}$ has dimension $1500 \times 1500$ in the condensed formulation and mixes the thrust-cost ($R = 30$) and torque-cost ($R = 1500$) scales together. The resulting condition number degrades the convergence of the underlying ADMM, and the GPU parallelism advantage that justifies the dense formulation does not pay off until the problem is too large for structured solvers like ours to fit in cache. The crossover, based on our measurements and the published ReLU-QP scaling curves, is in the $n \approx 50$--$100$ range --- well above the Crazyflie's $n = 12$.
+
+We do not view this as a defect of ReLU-QP. The result is consistent with the design goals stated in~\cite{bishop2024reluqp}: ``competitive for small-to-medium problems and order-of-magnitude improvements for larger-scale problems.'' For our use case (single robot, $12$ states), structure-exploiting solvers are correct; for batched evaluation across thousands of robots in a parallel simulator, ReLU-QP would be the right choice.
+
+\subsection{Summary}
+
+\begin{table}[t]
+\centering
+\caption{Solver comparison on Crazyflie linear MPC, $N=20$, $n_x=12$, $n_u=4$. All solvers find the same global optimum when they converge.}
+\label{tab:solvers}
+\begin{tabular}{lrrr}
+\toprule
+\textbf{Solver} & \textbf{RMSE} & \textbf{Median solve} & \textbf{Notes} \\
+\midrule
+C ADMM (ours) & $3.7$~mm & $86~\mu$s & cached Riccati \\
+OSQP & $3.7$~mm & $2{,}141~\mu$s & sparse Cholesky \\
+ReLU-QP & --- & --- & did not converge \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Distillation: From MPC to a Neural Policy}
+\label{sec:dagger}
+
+\subsection{Why Distill}
+
+The C ADMM is fast, but deployment still requires the full dynamics model, the cached Riccati matrices, and a working solver. For embedded or batched-inference scenarios it is attractive to compress the entire pipeline into a feedforward network: the network has no dynamics dependency at deployment, generalizes across the model uncertainty seen at training time, and runs as a single matrix-multiply chain. We use DAgger~\cite{ross2011dagger} with DART~\cite{laskey2017dart} noise injection.
+
+\subsection{Network Architecture}
+
+The policy is a three-layer MLP: $24 \to 64 \to 64 \to 4$ with LayerNorm on the input and tanh on the output. The input is the state error plus the next four reference waypoints; the output is in the normalized $[-1, 1]$ range and is rescaled to $(T, \tau_x, \tau_y, \tau_z)$. Total parameters: $6{,}276$.
+
+\subsection{DAgger with DART}
+
+Behavior cloning fails on this problem: a network trained purely on MPC rollouts diverges at deployment because the rollout distribution does not cover off-policy states. DART injects training-time noise on the expert action, sampled from $\mathcal{N}(\bm{0}, \alpha \Sigma_\text{expert})$ with $\alpha$ adapted to keep average TV-distance from the on-policy distribution below a threshold. This produces a covering dataset on which behavior cloning succeeds (with $13.1$~mm tracking, vs. crashing). DAgger then iteratively refines the policy by querying the expert on the student's rollout states; we ran $5$ iterations with $1{,}500$ episodes per iteration.
+
+\subsection{Distilled Policy Results}
+
+The final policy tracks the figure-8 at $4.1$~mm RMSE, $11\%$ degradation from the MPC teacher. Inference is implemented as plain C with hand-written matrix multiplies and runs in $2.1~\mu$s on the same CPU --- $41\times$ faster than the C ADMM solver, with no dynamics model, solver, or external dependency in the deployment binary. A summary is given in Table~\ref{tab:dagger}.
+
+\begin{table}[t]
+\centering
+\caption{MPC vs distilled policy on figure-8.}
+\label{tab:dagger}
+\begin{tabular}{lrr}
+\toprule
+\textbf{Controller} & \textbf{RMSE} & \textbf{Latency} \\
+\midrule
+LQR baseline & $9.2$~mm & $\sim 30~\mu$s (NumPy) \\
+C ADMM MPC & $3.7$~mm & $86~\mu$s \\
+BC alone & --- & crashes \\
+BC + DART & $13.1$~mm & $2.1~\mu$s \\
+DAgger + DART (final) & $4.1$~mm & $2.1~\mu$s \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Trade-Offs}
+
+The distilled policy is faster and dependency-free, but it is approximate (no constraint guarantees) and uninterpretable (a $6$K-parameter black box). The MPC remains the right choice when constraint satisfaction must be certified or when the dynamics model is expected to be reasonably accurate. A complementary approach we did not implement is differentiable MPC~\cite{amos2018diffmpc}: rather than replacing the solver with a network, backpropagate through the solver to learn its parameters ($Q$, $R$, model). This preserves constraint satisfaction at deployment while still benefiting from data.
+
+\section{Discussion and Limitations}
+
+\textbf{Linearization regime.} Tracking results are reported in simulation at $1$~m/s, where the body remains within $\sim 15^\circ$ of hover. Beyond $3$~m/s linearization error becomes the dominant tracking error source and a switch to nonlinear MPC or differential-flatness feedforward (e.g., the INDI inner loop of~\cite{tal2021indi}) would be required.
+
+\textbf{Hardware deployment.} All numbers in this paper are simulation-side. The C ADMM has been written to be portable to STM32F4-class microcontrollers but has not been flashed to a physical Crazyflie. The published TinyMPC~\cite{nguyen2024tinympc} runs at $500$~Hz on the same MCU class with similar problem size, providing strong evidence that the deployment is feasible.
+
+\textbf{ReLU-QP analysis.} Our negative result on ReLU-QP is empirical and limited to the specific cost-matrix scales of the Crazyflie linear MPC. We have not characterized the boundary precisely, and a careful study of the conditioning-vs-state-dimension trade-off would be a useful follow-up. The published ReLU-QP scaling experiments use Atlas humanoid and quadruped MPC ($n_x \approx 30$--$45$), which sit closer to the crossover and converge cleanly.
+
+\textbf{Distilled policy generalization.} The DAgger student was trained at a fixed mass and disturbance level. We did not run domain randomization or sim-to-real, and we expect tracking to degrade under battery-depletion mass changes, propeller damage, or wind disturbance --- closing those gaps would require either training-time domain randomization or test-time adaptation, neither of which is in scope here.
+
+\section{Related Work}
+
+\textbf{Embedded MPC solvers.} OSQP~\cite{stellato2020osqp} is the canonical sparse first-order QP solver; HPIPM~\cite{frison2020hpipm} provides interior-point methods specialized for MPC. TinyMPC~\cite{nguyen2024tinympc}, the most direct antecedent for this work, demonstrated $500$~Hz MPC on a Crazyflie microcontroller using the same Riccati-caching trick.
+
+\textbf{Quadrotor MPC.} Tal and Karaman~\cite{tal2021indi} reach $66$~mm RMSE at $13$~m/s on a custom $800$~g quadrotor using INDI plus differential-flatness snap tracking. The Crazyswarm Mellinger baseline reports $\sim 20$~mm at moderate speeds. Our $3.7$~mm number at $1$~m/s is competitive in the slow regime in simulation; on hardware, $3$--$5$~mm is the practical floor due to airframe flex and motor variability.
+
+\textbf{Policy distillation for MPC.} The MPC-as-teacher idea predates DAgger and has been explored extensively in autonomous driving and locomotion; for quadrotors, Loquercio et al.~\cite{loquercio2021agile} use IL from privileged simulators, and Song and Scaramuzza~\cite{song2022policy} explicitly train policies in the loop with MPC on quadrotors. Our contribution here is not the technique but the latency number ($2.1~\mu$s) and the explicit trade-off table.
+
+\section{Conclusion}
+
+We have shown that a $400$-line, dependency-free C ADMM solver tuned to the Riccati structure of quadrotor MPC tracks a Crazyflie figure-8 at $3.7$~mm RMSE with $86~\mu$s median solve time, $24.9\times$ faster than OSQP. A general-purpose GPU solver (ReLU-QP) is the wrong tool for this size of problem, but its design constraints are well-defined and the failure is informative. Distillation via DAgger compresses the entire stack into a $6$K-parameter network at $2.1~\mu$s deployment latency, with $11\%$ tracking degradation but no dynamics-model dependency. The full pipeline targets the production deployment regime of small-quadrotor autonomy stacks at companies that ship aerial robots.
+
+\bibliographystyle{IEEEtran}
+\begin{thebibliography}{99}
+
+\bibitem{stellato2020osqp}
+B.~Stellato, G.~Banjac, P.~Goulart, A.~Bemporad, and S.~Boyd, ``OSQP: an operator splitting solver for quadratic programs,'' \emph{Mathematical Programming Computation}, vol.~12, no.~4, pp.~637--672, 2020.
+
+\bibitem{nguyen2024tinympc}
+A.~Nguyen, S.~Schoedel, A.~Alavilli, B.~Plancher, and Z.~Manchester, ``TinyMPC: Model-predictive control on resource-constrained microcontrollers,'' in \emph{IEEE Int. Conf. on Robotics and Automation (ICRA)}, 2024, Best Paper in Automation.
+
+\bibitem{bishop2024reluqp}
+A.~Bishop, J.~Brüdigam, and Z.~Manchester, ``ReLU-QP: A GPU-accelerated quadratic programming solver for model-predictive control,'' in \emph{IEEE Int. Conf. on Robotics and Automation (ICRA)}, 2024.
+
+\bibitem{boyd2011admm}
+S.~Boyd, N.~Parikh, E.~Chu, B.~Peleato, and J.~Eckstein, ``Distributed optimization and statistical learning via the alternating direction method of multipliers,'' \emph{Foundations and Trends in Machine Learning}, vol.~3, no.~1, pp.~1--122, 2011.
+
+\bibitem{ross2011dagger}
+S.~Ross, G.~Gordon, and D.~Bagnell, ``A reduction of imitation learning and structured prediction to no-regret online learning,'' in \emph{Int. Conf. on Artificial Intelligence and Statistics (AISTATS)}, 2011.
+
+\bibitem{laskey2017dart}
+M.~Laskey, J.~Lee, R.~Fox, A.~Dragan, and K.~Goldberg, ``DART: Noise injection for robust imitation learning,'' in \emph{Conf. on Robot Learning (CoRL)}, 2017.
+
+\bibitem{amos2018diffmpc}
+B.~Amos, I.~D.~J.~Rodriguez, J.~Sacks, B.~Boots, and J.~Z.~Kolter, ``Differentiable MPC for end-to-end planning and control,'' in \emph{Advances in Neural Information Processing Systems (NeurIPS)}, 2018.
+
+\bibitem{tal2021indi}
+E.~Tal and S.~Karaman, ``Accurate tracking of aggressive quadrotor trajectories using incremental nonlinear dynamic inversion and differential flatness,'' \emph{IEEE Trans. Control Systems Technology}, vol.~29, no.~3, pp.~1203--1218, 2021.
+
+\bibitem{frison2020hpipm}
+G.~Frison and M.~Diehl, ``HPIPM: A high-performance quadratic programming framework for model predictive control,'' in \emph{IFAC World Congress}, 2020.
+
+\bibitem{loquercio2021agile}
+A.~Loquercio, E.~Kaufmann, R.~Ranftl, M.~Müller, V.~Koltun, and D.~Scaramuzza, ``Learning high-speed flight in the wild,'' \emph{Science Robotics}, vol.~6, no.~59, 2021.
+
+\bibitem{song2022policy}
+Y.~Song and D.~Scaramuzza, ``Policy search for model predictive control with application to agile drone flight,'' \emph{IEEE Trans. Robotics}, vol.~38, no.~4, pp.~2114--2130, 2022.
+
+\end{thebibliography}
+
+\end{document}

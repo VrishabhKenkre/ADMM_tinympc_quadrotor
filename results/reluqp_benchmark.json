@@ -1,0 +1,59 @@
+{
+  "C_ADMM": {
+    "ss_rmse_mm": 3.720083262032756,
+    "solve_us_median": 45.7055,
+    "solve_us_mean": 50.842177,
+    "solve_us_p95": 73.452,
+    "solve_us_p99": 150.5931999999999,
+    "solve_us_max": 1072.881,
+    "solve_us_min": 28.821,
+    "iters_median": 11.0,
+    "iters_max": 200,
+    "final_err_mm": 7.925846388759383,
+    "steps": 1000,
+    "device": "CPU (C shared lib)"
+  },
+  "ReLU_QP": {
+    "ss_rmse_mm": 4.852844299384345,
+    "solve_us_median": 1880.8580935001373,
+    "solve_us_mean": 2146.594235673547,
+    "solve_us_p5": 1835.6346525251865,
+    "solve_us_p95": 2013.2275298237798,
+    "solve_us_p99": 2167.955692857504,
+    "solve_us_max": 223342.70551800728,
+    "solve_us_min": 1803.9457499980927,
+    "iters_median": 25.0,
+    "iters_mean": 25.325,
+    "iters_max": 275,
+    "iters_min": 25,
+    "final_err_mm": 6.234373961959113,
+    "steps": 1000,
+    "formulation": "condensed (controls-only)",
+    "n_vars": 80,
+    "n_constraints": 80,
+    "W_size": "240x240",
+    "precision": "float64",
+    "batch_size": 1,
+    "device": "NVIDIA L40S",
+    "device_vram_gb": 47.7,
+    "adaptive_rho": true,
+    "max_iter_setting": 4000,
+    "timing_includes_transfer": true,
+    "timing_note": "perf_counter around solver.solve(); includes CPU->GPU g upload and GPU->CPU x download; excludes NumPy cost-vector construction"
+  },
+  "comparison": {
+    "speedup_admm_over_reluqp": 41.2,
+    "rmse_delta_mm": 1.13
+  },
+  "benchmark": {
+    "trajectory": "figure-8",
+    "radius_m": 0.5,
+    "altitude_m": 1.0,
+    "period_s": 4.0,
+    "duration_s": 10.0,
+    "control_rate_hz": 100,
+    "dt_sim": 0.002,
+    "horizon_N": 20,
+    "warmup_skip_s": 2.0
+  }
+}
