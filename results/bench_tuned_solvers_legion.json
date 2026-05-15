@@ -1,0 +1,51 @@
+{
+  "hardware": "Intel i9-14900HX laptop, single core, Legion Pro 5 16IRX9",
+  "trajectory": "figure-8",
+  "rate_hz": 100,
+  "horizon_N": 20,
+  "duration_s": 4.0,
+  "solvers": {
+    "C_ADMM_original": {
+      "config": "rho=1, max_iter=200, eps=1e-4",
+      "rmse_mm": 3.72,
+      "median_us": 23.1,
+      "p95_us": 58.5,
+      "iters_median": 10
+    },
+    "C_ADMM_tuned": {
+      "config": "rho=3, max_iter=50, eps=1e-3",
+      "rmse_mm": 3.42,
+      "median_us": 9.4,
+      "p95_us": 15.5,
+      "iters_median": 4
+    },
+    "C_ADMM_speed_opt": {
+      "config": "rho=0.3, max_iter=50, eps=1e-3",
+      "rmse_mm": 4.48,
+      "median_us": 3.2,
+      "p95_us": 6.3,
+      "iters_median": 1,
+      "note": "single-iteration warm-start convergence on slowly-varying references"
+    },
+    "OSQP_original": {
+      "config": "default",
+      "rmse_mm": 4.86,
+      "median_us": 201.6,
+      "p95_us": 275.6,
+      "iters_median": 25
+    },
+    "OSQP_tuned": {
+      "config": "eps_abs=eps_rel=1e-3, polish=False, max_iter=50, scaling=10",
+      "rmse_mm": 4.86,
+      "median_us": 203.4,
+      "p95_us": 295.5,
+      "iters_median": 25
+    }
+  },
+  "speedups": {
+    "C_ADMM_tuned_vs_OSQP_tuned": 21.6,
+    "C_ADMM_tuned_vs_OSQP_original": 21.4,
+    "C_ADMM_speed_opt_vs_OSQP_tuned": 63.6,
+    "C_ADMM_tuned_vs_ReLUQP_L40S": 196.0
+  }
+}
