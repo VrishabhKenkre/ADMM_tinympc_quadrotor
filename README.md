@@ -2,8 +2,6 @@
 
 **A 458-line C ADMM solver for embedded quadrotor MPC at 9.4 µs / step — 22× faster than tuned OSQP, 196× faster than ReLU-QP at batch=1 — distilled into a 6,276-parameter MLP that runs in 2.1 µs.**
 
-<!-- Headline video. Drag videos/c_admm_fig8.mp4 onto the GitHub README editor
-     to get a CDN asset URL and replace this <img> with a <video autoplay loop muted>. -->
 ![C ADMM tracking the figure-8 reference, overlay shows per-step solve time and cumulative solver wall-clock](videos/c_admm_fig8.gif)
 
 | solver                                  | median solve | RMSE       | hardware                       |
@@ -15,7 +13,7 @@
 
 > 22× faster than tuned OSQP at matched accuracy; the distilled policy then collapses the entire MPC stack into one matmul chain at another 4.5× over C ADMM.
 
-Vrishabh Kenkre — CMU MS Mechanical Engineering, Robotics & Controls, 2026 — vkenkre@andrew.cmu.edu — [paper PDF](quadrotor_mpc_admm_delivery/quadrotor_mpc_admm_ieee.pdf)
+Vrishabh Kenkre — CMU MS Mechanical Engineering, Robotics & Controls, 2025 — [paper PDF](quadrotor_mpc_admm_delivery/quadrotor_mpc_admm_ieee.pdf)
 
 ## What this is
 
@@ -55,7 +53,7 @@ torch        2.5.1          gymnasium    1.3.0
 imageio      2.37.3         imageio-ffmpeg 0.6.0  (for video recording)
 ```
 
-The C ADMM benchmark needs only numpy/scipy/mujoco/osqp/matplotlib; torch is required for the distillation pipeline, gymnasium for the env, imageio for `src/record_video.py`. Plus `gcc` (tested with `gcc-13`) for the C build, and `ffmpeg` if you want to stitch videos. Reproducing the ReLU-QP row additionally requires the upstream package and a CUDA GPU.
+The C ADMM benchmark needs only numpy/scipy/mujoco/osqp/matplotlib; torch is required for the distillation pipeline, gymnasium for the env, imageio for `src/record_video.py`. Plus `gcc` (tested with `gcc-13`) for the C build. Reproducing the ReLU-QP row additionally requires the upstream package and a CUDA GPU.
 
 ## What's in this repo
 
@@ -96,28 +94,5 @@ quadrotor_mpc_admm_delivery/   The IEEE paper (.tex + compiled .pdf)
 | Fig. 6 (distillation)                   | `src/dagger.py`                              | `results/dagger_results.png`            |
 | ADMM tuning sweep                       | `src/tune_admm.py`                           | regenerates the configs in Table I      |
 | OSQP tuning sweep                       | `src/tune_osqp.py`                           | `results/osqp_tuned_sweep_pareto.json`  |
-| Table II (three-way summary)            | see Known issues                             | `results/bench_all_solvers.json`        |
 | ReLU-QP GPU row                         | `src/solver_reluqp.py` (CUDA required)       | `results/reluqp_benchmark.json`         |
 | All four demo videos                    | `src/record_video.py --solver X --traj Y`    | `videos/*.mp4` + per-step CSV           |
-
-
-
-
-
-## Citing
-
-```bibtex
-@misc{kenkre2026admmquad,
-  title  = {A Structure-Exploiting C ADMM Solver for Embedded Quadrotor MPC,
-            with Solver Benchmarks and Neural Distillation},
-  author = {Kenkre, Vrishabh},
-  year   = {2026},
-  note   = {preprint, in preparation},
-}
-```
-
-Paper source: [`quadrotor_mpc_admm_delivery/quadrotor_mpc_admm_ieee.tex`](quadrotor_mpc_admm_delivery/quadrotor_mpc_admm_ieee.tex).
-
-## License
-
-MIT. See [`LICENSE`](LICENSE) for the solver core; the Bitcraze Crazyflie 2 MuJoCo model (cloned via `setup.sh`) is Apache 2.0 from `mujoco_menagerie`.
