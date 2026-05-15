@@ -1,0 +1,85 @@
+\relax 
+\citation{stellato2020osqp}
+\citation{nguyen2024tinympc}
+\citation{bishop2024reluqp}
+\citation{ross2011dagger}
+\citation{laskey2017dart}
+\@writefile{toc}{\contentsline {section}{\numberline {I}Introduction}{1}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {II}System Model and MPC Formulation}{1}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {II-A}}Quadrotor Dynamics}{1}{}\protected@file@percent }
+\citation{boyd2011admm}
+\citation{nguyen2024tinympc}
+\@writefile{lof}{\contentsline {figure}{\numberline {1}{\ignorespaces The Bitcraze Crazyflie 2 quadrotor platform used in simulation, rendered from the MuJoCo Menagerie model. Mass $27$\nobreakspace  {}g, thrust-to-weight $2.27$, hover thrust $0.265$\nobreakspace  {}N. Linearization parameters are derived from the open-source model after the actuator corrections described in \S  III\hbox {}.}}{2}{}\protected@file@percent }
+\newlabel{fig:crazyflie}{{1}{2}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {II-B}}Linear MPC}{2}{}\protected@file@percent }
+\newlabel{eq:mpc}{{1}{2}}
+\@writefile{toc}{\contentsline {section}{\numberline {III}Custom ADMM Solver in C}{2}{}\protected@file@percent }
+\newlabel{sec:admm}{{III}{2}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {III-A}}Splitting and Algorithm}{2}{}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {2}{\ignorespaces Control architecture. A trajectory generator produces a $20$-step reference horizon; the linear MPC block solves the constrained QP every $10$\nobreakspace  {}ms via the in-house C ADMM solver with cached Riccati recursion (\S  III\hbox {}); the first control $\bm  {u}_0$ is applied to the MuJoCo Crazyflie model and the resulting state $\bm  {x}$ is fed back as the next initial condition.}}{2}{}\protected@file@percent }
+\newlabel{fig:architecture}{{2}{2}}
+\newlabel{eq:admm_u}{{4}{2}}
+\newlabel{eq:admm_z}{{5}{2}}
+\newlabel{eq:admm_y}{{6}{2}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {III-B}}The Riccati Caching Trick}{2}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {III-C}}Implementation Details}{2}{}\protected@file@percent }
+\newlabel{lst:admm}{{1}{3}}
+\@writefile{lol}{\contentsline {lstlisting}{\numberline {1}Inner loop of the C ADMM solver. Comments mark the algorithmic correspondence to (4\hbox {}) -- (6\hbox {}). All arrays are stack-allocated.}{3}{}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {3}{\ignorespaces Inner loop of the ADMM solver, expanding the box labeled `ADMM solver' in Fig.\nobreakspace  {}2\hbox {}. The blue block is precomputed once at startup from the discretized dynamics and cost; the three red blocks are the per-iteration work, with steps (1)--(3) corresponding to equations (4\hbox {})--(6\hbox {}) in the text. Caching the Riccati recursion reduces step (1) from a $332{\times }332$ sparse Cholesky to an $n_x{\times }n_x$ matvec.}}{3}{}\protected@file@percent }
+\newlabel{fig:admm_iter}{{3}{3}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {III-D}}Tracking and Latency Results}{3}{}\protected@file@percent }
+\newlabel{sec:results_admm}{{\mbox  {III-D}}{3}}
+\@writefile{lot}{\contentsline {table}{\numberline {I}{\ignorespaces C ADMM solver latency on a Crazyflie figure-8 (peak $1.11$\nobreakspace  {}m/s, $4$\nobreakspace  {}s period, $100$\nobreakspace  {}Hz), measured on a single core of an Intel i9-14900HX laptop CPU. Median and 95th-percentile solve times reported over closed-loop tracking after warmup. The speed-opt configuration achieves single-iteration warm-start convergence; the tuned configuration is the speed-accuracy Pareto-optimal point.}}{3}{}\protected@file@percent }
+\newlabel{tab:latency}{{I}{3}}
+\@writefile{lof}{\contentsline {figure}{\numberline {4}{\ignorespaces Speed-accuracy Pareto frontier for the three solvers on the closed-loop figure-8 task. The C ADMM curve sweeps three operating points ($\rho =0.3, 3, 1$) from $3.2$ to $23.1\nobreakspace  {}\mu $s; the tuned configuration ($\rho =3$, $9.4\nobreakspace  {}\mu $s, $3.42$\nobreakspace  {}mm) is the speed-accuracy Pareto-optimal point and is $22\times $ faster than tuned OSQP at comparable accuracy. ReLU-QP converges to the same constrained-LQR optimum as OSQP ($4.85$\nobreakspace  {}mm) but runs at $1.84$\nobreakspace  {}ms median solve time on an L40S GPU at batch size $1$ ($196\times $ slower than C ADMM); see \S  \mbox  {IV-B}\hbox {} for the regime characterization. Logarithmic time axis.}}{3}{}\protected@file@percent }
+\newlabel{fig:pareto}{{4}{3}}
+\@writefile{toc}{\contentsline {section}{\numberline {IV}Solver Benchmarks}{3}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {IV-A}}OSQP Comparison}{3}{}\protected@file@percent }
+\citation{bishop2024reluqp}
+\citation{ross2011dagger}
+\citation{laskey2017dart}
+\newlabel{sec:hwsens}{{\mbox  {IV-A}}{4}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {IV-B}}ReLU-QP: A Different Operating Regime}{4}{}\protected@file@percent }
+\newlabel{sec:reluqp}{{\mbox  {IV-B}}{4}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5}{\ignorespaces Closed-loop tracking on the figure-8 reference. The tuned C ADMM ($\rho {=}3$) holds steady-state RMSE at $3.42$\nobreakspace  {}mm; OSQP and ReLU-QP find essentially the same trajectory ($\approx 4.86$\nobreakspace  {}mm) since all three minimize the same constrained-LQR QP. Residual differences below $\sim 2$\nobreakspace  {}mm are dominated by hover-linearization error against the nonlinear MuJoCo simulation rather than by solver tolerance.}}{4}{}\protected@file@percent }
+\newlabel{fig:tracking}{{5}{4}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {IV-C}}Summary}{4}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {V}Distillation: From MPC to a Neural Policy}{4}{}\protected@file@percent }
+\newlabel{sec:dagger}{{V}{4}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {V-A}}Why Distill}{4}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {V-B}}Network Architecture}{4}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {V-C}}DAgger with DART}{4}{}\protected@file@percent }
+\citation{amos2018diffmpc}
+\citation{tal2021indi}
+\citation{nguyen2024tinympc}
+\@writefile{lot}{\contentsline {table}{\numberline {II}{\ignorespaces Solver comparison on Crazyflie linear MPC ($N=20$, $n_x=12$, $n_u=4$) closed-loop on figure-8 ($1.11$\nobreakspace  {}m/s peak) and helix. All solvers converge to the same constrained-LQR optimum; residual RMSE differences (under $2$\nobreakspace  {}mm across all rows) reflect first-order tolerance settings and the dominant hover-linearization error against nonlinear simulation. CPU rows for figure-8 use a single core of an Intel i9-14900HX laptop; CPU rows for helix use a Xeon-class host CPU (proportional scaling preserves relative speedups; see Hardware sensitivity, \S  \mbox  {IV-A}\hbox {}). ReLU-QP runs on an NVIDIA L40S GPU at batch size $1$, outside its intended high-batch operating regime.}}{5}{}\protected@file@percent }
+\newlabel{tab:solvers}{{II}{5}}
+\@writefile{lof}{\contentsline {figure}{\numberline {6}{\ignorespaces Distillation pipeline outcome. DAgger with DART noise injection converges to a $6{,}276$-parameter MLP that tracks the figure-8 reference at $4.1$\nobreakspace  {}mm RMSE ($\sim 20\%$ degradation vs.\ the MPC teacher) while running in $2.1\nobreakspace  {}\mu $s of pure C inference --- no dynamics model, no solver, no external dependency in the deployment binary.}}{5}{}\protected@file@percent }
+\newlabel{fig:distill}{{6}{5}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {V-D}}Distilled Policy Results}{5}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {V-E}}Trade-Offs}{5}{}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {III}{\ignorespaces MPC vs distilled policy on figure-8.}}{5}{}\protected@file@percent }
+\newlabel{tab:dagger}{{III}{5}}
+\@writefile{toc}{\contentsline {section}{\numberline {VI}Discussion and Limitations}{5}{}\protected@file@percent }
+\citation{stellato2020osqp}
+\citation{frison2020hpipm}
+\citation{nguyen2024tinympc}
+\citation{tal2021indi}
+\citation{loquercio2021agile}
+\citation{song2022policy}
+\bibstyle{IEEEtran}
+\bibcite{stellato2020osqp}{1}
+\bibcite{nguyen2024tinympc}{2}
+\bibcite{bishop2024reluqp}{3}
+\bibcite{boyd2011admm}{4}
+\bibcite{ross2011dagger}{5}
+\bibcite{laskey2017dart}{6}
+\bibcite{amos2018diffmpc}{7}
+\bibcite{tal2021indi}{8}
+\bibcite{frison2020hpipm}{9}
+\bibcite{loquercio2021agile}{10}
+\bibcite{song2022policy}{11}
+\@writefile{toc}{\contentsline {section}{\numberline {VII}Related Work}{6}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {VIII}Conclusion}{6}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{References}{6}{}\protected@file@percent }
+\gdef \@abspage@last{6}

@@ -3,10 +3,11 @@
 
 \usepackage{amsmath,amssymb,amsfonts}
 \usepackage{bm}
-\usepackage{algorithmic}
-\usepackage{algorithm}
 \usepackage{graphicx}
+\graphicspath{{../figures/}{./figures/}{../results/}}
 \usepackage{textcomp}
+\usepackage{tikz}
+\usetikzlibrary{positioning, arrows.meta, calc, shapes.geometric}
 \usepackage{xcolor}
 \usepackage{booktabs}
 \usepackage{multirow}
@@ -76,9 +77,16 @@ The full code, trained policy weights, and replication instructions are availabl
 
 \section{System Model and MPC Formulation}
 
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.85\columnwidth]{crazyflie_platform.png}
+\caption{The Bitcraze Crazyflie 2 quadrotor platform used in simulation, rendered from the MuJoCo Menagerie model. Mass $27$~g, thrust-to-weight $2.27$, hover thrust $0.265$~N. Linearization parameters are derived from the open-source model after the actuator corrections described in \S\ref{sec:admm}.}
+\label{fig:crazyflie}
+\end{figure}
+
 \subsection{Quadrotor Dynamics}
 
-We use the standard $12$-state Crazyflie model: $\bm{x} = [\bm{p}^\top, \bm{v}^\top, \bm{\eta}^\top, \bm{\omega}^\top]^\top$ where $\bm{p}, \bm{v} \in \mathbb{R}^3$ are inertial position and velocity, $\bm{\eta} = (\phi, \theta, \psi)$ are roll-pitch-yaw, and $\bm{\omega} \in \mathbb{R}^3$ is the body-frame angular velocity. The control input is $\bm{u} = [T, \tau_x, \tau_y, \tau_z]^\top$ with collective thrust $T$ and three body torques. We use the MuJoCo Menagerie Crazyflie~2 model after applying the following corrections, which are required to obtain physically meaningful dynamics:
+We use the standard $12$-state Crazyflie model (Fig.~\ref{fig:crazyflie}): $\bm{x} = [\bm{p}^\top, \bm{v}^\top, \bm{\eta}^\top, \bm{\omega}^\top]^\top$ where $\bm{p}, \bm{v} \in \mathbb{R}^3$ are inertial position and velocity, $\bm{\eta} = (\phi, \theta, \psi)$ are roll-pitch-yaw, and $\bm{\omega} \in \mathbb{R}^3$ is the body-frame angular velocity. The control input is $\bm{u} = [T, \tau_x, \tau_y, \tau_z]^\top$ with collective thrust $T$ and three body torques. We use the MuJoCo Menagerie Crazyflie~2 model after applying the following corrections, which are required to obtain physically meaningful dynamics:
 
 \begin{itemize}
     \item Thrust range corrected from the default $[0, 0.0155]$ to the manufacturer-rated $[0, 0.6]$~N total thrust.
@@ -106,9 +114,27 @@ with horizon $N = 20$, $Q = \text{diag}(Q_p, Q_v, Q_\eta, Q_\omega)$, and a cont
 \section{Custom ADMM Solver in C}
 \label{sec:admm}
 
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}[
+    >=Stealth, thick,
+    block/.style={rectangle, draw, rounded corners=3pt, minimum width=1.9cm, minimum height=0.9cm, align=center, font=\small},
+    mpc/.style={rectangle, draw, fill=cmuRed!10, rounded corners=3pt, minimum width=2.6cm, minimum height=1.5cm, align=center, font=\small},
+]
+\node[block] (ref)   {Trajectory\\generator};
+\node[mpc, right=0.7cm of ref] (mpc) {Linear MPC\\[2pt]\footnotesize ADMM solver\\\footnotesize (cached Riccati)};
+\node[block, right=0.7cm of mpc] (plant) {Crazyflie\\dynamics\\(MuJoCo)};
+\draw[->] (ref)   -- node[above, font=\scriptsize]{$\bm{x}^{\text{ref}}_{0:N}$} (mpc);
+\draw[->] (mpc)   -- node[above, font=\scriptsize]{$\bm{u}_0$} (plant);
+\draw[->] (plant.south) -- ++(0,-0.55) -| node[pos=0.25, below, font=\scriptsize]{$\bm{x}$} (mpc.south);
+\end{tikzpicture}
+\caption{Control architecture. A trajectory generator produces a $20$-step reference horizon; the linear MPC block solves the constrained QP every $10$~ms via the in-house C ADMM solver with cached Riccati recursion (\S\ref{sec:admm}); the first control $\bm{u}_0$ is applied to the MuJoCo Crazyflie model and the resulting state $\bm{x}$ is fed back as the next initial condition.}
+\label{fig:architecture}
+\end{figure}
+
 \subsection{Splitting and Algorithm}
 
-We apply ADMM to (\ref{eq:mpc}) by splitting the input variable $\bm{u}$ from a slack variable $\bm{z}$ that absorbs the box constraint:
+The overall control loop is summarized in Fig.~\ref{fig:architecture}; the per-iteration structure of the inner ADMM solver is illustrated in Fig.~\ref{fig:admm_iter}. We apply ADMM to (\ref{eq:mpc}) by splitting the input variable $\bm{u}$ from a slack variable $\bm{z}$ that absorbs the box constraint:
 \begin{equation}
 \begin{aligned}
 \min_{\bm{u}, \bm{z}} \quad & f(\bm{u}) + g(\bm{z}) \\
@@ -139,21 +165,21 @@ This reduces the cost of (\ref{eq:admm_u}) from $\mathcal{O}((N(n_x + n_u))^3)$ 
 
 The C implementation is approximately $400$ lines and uses no dynamic allocation. The hot loop is shown in Listing~\ref{lst:admm}. We use stack-allocated static arrays sized to a maximum problem dimension chosen at compile time, and a zero-overhead Python binding via \texttt{ctypes} for the offline benchmarking and DAgger data collection.
 
-\begin{lstlisting}[style=ccode, label=lst:admm, caption={Inner loop of the C ADMM solver. Comments mark the algorithmic correspondence to (\ref{eq:admm_u}) -- (\ref{eq:admm_y}). All arrays are stack-allocated.}]
+\begin{lstlisting}[style=ccode, label=lst:admm, float=t, caption={Inner loop of the C ADMM solver. Comments mark the algorithmic correspondence to (\ref{eq:admm_u}) -- (\ref{eq:admm_y}). All arrays are stack-allocated.}]
 for (int k = 0; k < max_iters; ++k) {
-    /* (5): u-update via cached Riccati */
+    /* step 1: u-update via cached Riccati [eq. (5)] */
     matvec(K_inf, x, Kx, NX, NX);
     for (int i = 0; i < NU; ++i)
         u[i] = -Kx[i] - d_ctrl[i]
              + rho_over_sigma * (z[i] - y[i]);
 
-    /* (6): z-update via box projection */
+    /* step 2: z-update via box projection [eq. (6)] */
     for (int i = 0; i < NU; ++i) {
         double v = u[i] + y[i] / rho;
         z[i] = clamp(v, u_min[i], u_max[i]);
     }
 
-    /* (7): dual update */
+    /* step 3: dual update [eq. (7)] */
     for (int i = 0; i < NU; ++i)
         y[i] += rho * (u[i] - z[i]);
 
@@ -162,6 +188,30 @@ for (int k = 0; k < max_iters; ++k) {
         dual_res(z,z_prev) < tol) break;
 }
 \end{lstlisting}
+
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}[
+    >=Stealth,
+    pre/.style={rectangle, draw, fill=blue!10, rounded corners=2pt, minimum width=5.2cm, minimum height=0.55cm, align=center, font=\footnotesize},
+    stp/.style={rectangle, draw, fill=cmuRed!10, rounded corners=2pt, minimum width=5.2cm, minimum height=0.55cm, align=center, font=\footnotesize},
+    cmp/.style={diamond, draw, aspect=2.5, fill=gray!10, minimum width=4.8cm, align=center, font=\footnotesize, inner sep=0pt},
+]
+\node[pre]                          (init) {Precompute $K_\infty,\ C_1,\ C_2$ from $(A_d, B_d, Q, R)$};
+\node[stp, below=0.25cm of init]   (u)    {(1) $\bm{u}^{k{+}1}$: cached Riccati matvec ($n_x \times n_x$ blocks)};
+\node[stp, below=0.25cm of u]      (z)    {(2) $\bm{z}^{k{+}1}$: box projection onto $[\bm{u}_{\min},\bm{u}_{\max}]$};
+\node[stp, below=0.25cm of z]      (y)    {(3) $\bm{y}^{k{+}1}$: dual update};
+\node[cmp,  below=0.35cm of y]      (chk)  {residuals $<$ tol?};
+\draw[->] (init) -- (u);
+\draw[->] (u)    -- (z);
+\draw[->] (z)    -- (y);
+\draw[->] (y)    -- (chk);
+\draw[->] (chk.west) -| ([xshift=-0.7cm]u.west) -- node[pos=0.5, above, font=\scriptsize]{no} (u.west);
+\draw[->] (chk.south) -- ++(0,-0.4) node[anchor=north, font=\scriptsize]{yes: return $\bm{u}^*$};
+\end{tikzpicture}
+\caption{Inner loop of the ADMM solver, expanding the box labeled `ADMM solver' in Fig.~\ref{fig:architecture}. The blue block is precomputed once at startup from the discretized dynamics and cost; the three red blocks are the per-iteration work, with steps (1)--(3) corresponding to equations (\ref{eq:admm_u})--(\ref{eq:admm_y}) in the text. Caching the Riccati recursion reduces step (1) from a $332{\times}332$ sparse Cholesky to an $n_x{\times}n_x$ matvec.}
+\label{fig:admm_iter}
+\end{figure}
 
 \subsection{Tracking and Latency Results}
 \label{sec:results_admm}
@@ -185,9 +235,16 @@ original ($\rho{=}1$) & $23.1~\mu$s & $58.5~\mu$s & $10$ & $3.72$~mm \\
 
 \section{Solver Benchmarks}
 
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{three_way_pareto.pdf}
+\caption{Speed-accuracy Pareto frontier for the three solvers on the closed-loop figure-8 task. The C ADMM curve sweeps three operating points ($\rho=0.3, 3, 1$) from $3.2$ to $23.1~\mu$s; the tuned configuration ($\rho=3$, $9.4~\mu$s, $3.42$~mm) is the speed-accuracy Pareto-optimal point and is $22\times$ faster than tuned OSQP at comparable accuracy. ReLU-QP converges to the same constrained-LQR optimum as OSQP ($4.85$~mm) but runs at $1.84$~ms median solve time on an L40S GPU at batch size $1$ ($196\times$ slower than C ADMM); see \S\ref{sec:reluqp} for the regime characterization. Logarithmic time axis.}
+\label{fig:pareto}
+\end{figure}
+
 \subsection{OSQP Comparison}
 
-We reformulate (\ref{eq:mpc}) in OSQP's sparse standard form ($332$ decision variables, $584$ constraints) and run the same figure-8 scenario at $100$~Hz with the same warm-starting strategy. The tuned OSQP configuration (\texttt{eps\_abs} $=$ \texttt{eps\_rel} $= 10^{-3}$, polish disabled, max\_iter $= 50$, scaling $= 10$) converges to $4.86$~mm tracking RMSE at a median solve time of $203.4~\mu$s --- $22\times$ slower than tuned C ADMM at slightly worse accuracy. The OSQP timing is dominated by the per-iteration cost of the sparse KKT factorization update, which our cached Riccati recursion avoids entirely. A hyperparameter sweep on a Xeon-class CPU across \texttt{eps} in $\{10^{-2}, 10^{-3}, 10^{-4}, 10^{-5}\}$, max\_iter in $\{25, 50, 100, 250, 500\}$, and scaling in $\{0, 5, 10, 25, 50\}$, holding polish off and warm-start on for real-time fairness, confirmed that OSQP is bounded below by its per-iteration cost ($\sim 14~\mu$s per ADMM step at $25$ iterations) regardless of hyperparameter choice. The same qualitative finding holds on our headline laptop CPU: tighter tolerances either failed to converge within iteration budgets or did not improve closed-loop RMSE. The per-iteration cost is the binding constraint, not the iteration count.
+We reformulate (\ref{eq:mpc}) in OSQP's sparse standard form ($332$ decision variables, $584$ constraints) and run the same figure-8 scenario at $100$~Hz with the same warm-starting strategy. The tuned OSQP configuration (\texttt{eps\_abs} $=$ \texttt{eps\_rel} $= 10^{-3}$, polish disabled, max\_iter $= 50$, scaling $= 10$) converges to $4.86$~mm tracking RMSE at a median solve time of $203.4~\mu$s --- $22\times$ slower than tuned C ADMM at slightly worse accuracy (Fig.~\ref{fig:pareto}). The OSQP timing is dominated by the per-iteration cost of the sparse KKT factorization update, which our cached Riccati recursion avoids entirely. A hyperparameter sweep on a Xeon-class CPU across \texttt{eps} in $\{10^{-2}, 10^{-3}, 10^{-4}, 10^{-5}\}$, max\_iter in $\{25, 50, 100, 250, 500\}$, and scaling in $\{0, 5, 10, 25, 50\}$, holding polish off and warm-start on for real-time fairness, confirmed that OSQP is bounded below by its per-iteration cost ($\sim 14~\mu$s per ADMM step at $25$ iterations) regardless of hyperparameter choice. The same qualitative finding holds on our headline laptop CPU: tighter tolerances either failed to converge within iteration budgets or did not improve closed-loop RMSE. The per-iteration cost is the binding constraint, not the iteration count.
 
 \textbf{Hardware sensitivity.}\label{sec:hwsens} Solver speedups are robust to CPU choice within the same architecture class. Cross-validation on a Xeon-class host CPU produced C ADMM at $16.6~\mu$s and OSQP at $352.0~\mu$s on the same closed-loop figure-8 task, preserving the $\sim 21\times$ relative speedup at slightly different absolute timings. Both solvers scale proportionally with single-thread CPU performance, so the relative speedup is the deployment-relevant figure of merit. Embedded deployment on Cortex-M class microcontrollers is expected to be $\sim 100$--$1000\times$ slower across all CPU solvers in proportion, preserving relative ratios; STM32 deployment remains future work and is the next target for the open-source release.
 
@@ -196,7 +253,7 @@ We reformulate (\ref{eq:mpc}) in OSQP's sparse standard form ($332$ decision var
 
 ReLU-QP~\cite{bishop2024reluqp} is a recent ADMM solver that unrolls each iteration as a fixed-architecture neural-network forward pass: the linear-system solve becomes a matrix multiply against a precomputed weight matrix, the box projection becomes a ReLU-equivalent clamp, and the dual update is a residual connection. The architecture is designed for GPU parallelism, with reported advantages emerging at batched solving (many independent QPs per kernel launch).
 
-We benchmarked ReLU-QP via its PyTorch reference implementation on the same closed-loop figure-8 task using an NVIDIA L40S datacenter GPU at batch size $1$, float64 precision, with adaptive $\rho$ enabled and a maximum of $4000$ ADMM iterations. The solver converged reliably to a median tracking RMSE of $4.85$~mm in a median of $25$ iterations --- statistically indistinguishable from OSQP's $4.86$~mm, as expected since both are first-order methods reaching the same constrained-LQR optimum. The achievable accuracy floor at $\approx 4.85$~mm reflects linearization error against the nonlinear MuJoCo simulator, not solver suboptimality.
+We benchmarked ReLU-QP via its PyTorch reference implementation on the same closed-loop figure-8 task using an NVIDIA L40S datacenter GPU at batch size $1$, float64 precision, with adaptive $\rho$ enabled and a maximum of $4000$ ADMM iterations. The solver converged reliably to a median tracking RMSE of $4.85$~mm in a median of $25$ iterations --- statistically indistinguishable from OSQP's $4.86$~mm, as expected since both are first-order methods reaching the same constrained-LQR optimum. The achievable accuracy floor at $\approx 4.85$~mm reflects linearization error against the nonlinear MuJoCo simulator, not solver suboptimality (Fig.~\ref{fig:tracking}).
 
 However, ReLU-QP's median solve time was $1.84$~ms --- $196\times$ slower than our C ADMM. The underlying GPU compute completes in single-digit microseconds for our $80$-variable condensed QP; the dominant cost at batch size $1$ is kernel launch overhead and CPU$\leftrightarrow$GPU memory transfer of the cost vector and solution. ReLU-QP additionally incurs a $223$~ms first-invocation overhead from JIT compilation, which would require ground-side warm-up before onboard deployment.
 
@@ -206,7 +263,7 @@ We do not view this as a defect of ReLU-QP. Onboard MPC for a single robot is a 
 
 \begin{table*}[t]
 \centering
-\caption{Solver comparison on Crazyflie linear MPC ($N=20$, $n_x=12$, $n_u=4$) closed-loop on figure-8 ($1.11$~m/s peak) and helix. All solvers converge to the same constrained-LQR optimum; residual RMSE differences ($\lesssim 1.7$~mm across the nine rows) reflect first-order tolerance settings and the dominant hover-linearization error against nonlinear simulation. CPU rows for figure-8 use a single core of an Intel i9-14900HX laptop; CPU rows for helix use a Xeon-class host CPU (proportional scaling preserves relative speedups; see Hardware sensitivity, \S\ref{sec:hwsens}). ReLU-QP runs on an NVIDIA L40S GPU at batch size $1$, outside its intended high-batch operating regime.}
+\caption{Solver comparison on Crazyflie linear MPC ($N=20$, $n_x=12$, $n_u=4$) closed-loop on figure-8 ($1.11$~m/s peak) and helix. All solvers converge to the same constrained-LQR optimum; residual RMSE differences (under $2$~mm across all rows) reflect first-order tolerance settings and the dominant hover-linearization error against nonlinear simulation. CPU rows for figure-8 use a single core of an Intel i9-14900HX laptop; CPU rows for helix use a Xeon-class host CPU (proportional scaling preserves relative speedups; see Hardware sensitivity, \S\ref{sec:hwsens}). ReLU-QP runs on an NVIDIA L40S GPU at batch size $1$, outside its intended high-batch operating regime.}
 \label{tab:solvers}
 \scriptsize
 \setlength{\tabcolsep}{4pt}
@@ -228,6 +285,13 @@ ReLU-QP       & bs$=1$, fp64              & helix & $1{,}820.3~\mu$s & $5.09$~mm
 \end{tabular}
 \end{table*}
 
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{benchmark_tuned_final.png}
+\caption{Closed-loop tracking on the figure-8 reference. The tuned C ADMM ($\rho{=}3$) holds steady-state RMSE at $3.42$~mm; OSQP and ReLU-QP find essentially the same trajectory ($\approx 4.86$~mm) since all three minimize the same constrained-LQR QP. Residual differences below $\sim 2$~mm are dominated by hover-linearization error against the nonlinear MuJoCo simulation rather than by solver tolerance.}
+\label{fig:tracking}
+\end{figure}
+
 \section{Distillation: From MPC to a Neural Policy}
 \label{sec:dagger}
 
@@ -243,9 +307,16 @@ The policy is a three-layer MLP: $24 \to 64 \to 64 \to 4$ with LayerNorm on the 
 
 Behavior cloning fails on this problem: a network trained purely on MPC rollouts diverges at deployment because the rollout distribution does not cover off-policy states. DART injects training-time noise on the expert action, sampled from $\mathcal{N}(\bm{0}, \alpha \Sigma_\text{expert})$ with $\alpha$ adapted to keep average TV-distance from the on-policy distribution below a threshold. This produces a covering dataset on which behavior cloning succeeds (with $13.1$~mm tracking, vs. crashing). DAgger then iteratively refines the policy by querying the expert on the student's rollout states; we ran $5$ iterations with $1{,}500$ episodes per iteration.
 
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{dagger_results.png}
+\caption{Distillation pipeline outcome. DAgger with DART noise injection converges to a $6{,}276$-parameter MLP that tracks the figure-8 reference at $4.1$~mm RMSE ($\sim 20\%$ degradation vs.\ the MPC teacher) while running in $2.1~\mu$s of pure C inference --- no dynamics model, no solver, no external dependency in the deployment binary.}
+\label{fig:distill}
+\end{figure}
+
 \subsection{Distilled Policy Results}
 
-The final policy tracks the figure-8 at $4.1$~mm RMSE, $\sim 20\%$ degradation from the MPC teacher. Inference is implemented as plain C with hand-written matrix multiplies and runs in $2.1~\mu$s on the same CPU --- $\sim 4.5\times$ faster than the tuned C ADMM solver, with no dynamics model, solver, or external dependency in the deployment binary. A summary is given in Table~\ref{tab:dagger}.
+The final policy tracks the figure-8 at $4.1$~mm RMSE, $\sim 20\%$ degradation from the MPC teacher (Fig.~\ref{fig:distill}). Inference is implemented as plain C with hand-written matrix multiplies and runs in $2.1~\mu$s on the same CPU --- $\sim 4.5\times$ faster than the tuned C ADMM solver, with no dynamics model, solver, or external dependency in the deployment binary. A summary is given in Table~\ref{tab:dagger}.
 
 \begin{table}[t]
 \centering
