@@ -1,6 +1,9 @@
-"""
-tune_admm.py — sweep ADMM internal knobs to find the speed/accuracy floor.
-Fixed: Q, R, dt, horizon, dynamics, trajectory.  Tunes: rho, max_iter, eps_abs.
+"""tune_admm.py -- sweep ADMM knobs to find the speed/accuracy floor.
+
+Fixed: Q, R, dt, horizon, dynamics, trajectory. Sweep: rho, max_iter, eps_abs.
+
+Run from the repository root:
+    python3 src/tune_admm.py
 """
 import sys, time, itertools
 sys.path.insert(0, '.')
@@ -75,7 +78,7 @@ for rho, mi, eps in itertools.product(rho_list, maxit_list, eps_list):
         print(f"{rho:6.1f} {mi:6d} {eps:10.0e} | FAILED: {e}")
 
 # Best by Pareto
-print("\nPareto frontier (min RMSE × solve product):")
+print("\nPareto frontier (min RMSE x solve product):")
 results.sort(key=lambda r: r['rmse_mm'] * r['solve_us'])
 for r in results[:5]:
     print(f"  rho={r['rho']:5.1f} max_it={r['max_iter']:3d} eps={r['eps']:.0e} -> "

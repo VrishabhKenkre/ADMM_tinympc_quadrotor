@@ -1,16 +1,13 @@
 """
-dagger.py — MPC→RL Distillation via DAgger for Crazyflie Quadrotor
-=====================================================================
-DAgger (Dataset Aggregation) pipeline:
-  1. Run MPC expert (C ADMM) → collect (state, action) pairs
-  2. Train neural network policy via behavioral cloning
-  3. Run learned policy → query MPC at visited states → aggregate data
-  4. Retrain → repeat
+dagger.py -- MPC-to-RL distillation via DAgger for the Crazyflie.
 
-The key insight: MPC is the teacher, RL network is the student.
-The student runs 10x faster and doesn't need the dynamics model at deployment.
+DAgger pipeline: run the MPC expert (C ADMM) to collect (state, action)
+pairs, train an MLP via behavioral cloning, roll the learned policy out
+and relabel visited states with the expert, then retrain. The student
+runs ~10x faster than the expert at deployment and is dynamics-free.
 
-Author: Vrishabh Kenkre (CMU MS MechE)
+Run from the repository root:
+    python3 src/dagger.py
 """
 
 import numpy as np
@@ -34,9 +31,7 @@ from quad_dynamics import QuadParams, linearize_at_hover, discretize_dynamics
 from solver_admm_c import CADMMSolver
 
 
-# ═══════════════════════════════════════════════════════════
-# 1. Gymnasium Environment
-# ═══════════════════════════════════════════════════════════
+# ---- Gymnasium environment -----------------------------------------------
 
 def gen_fig8_ff(c, r, h, per, dur, dt):
     N = int(dur / dt); t = np.arange(N) * dt; w = 2*np.pi/per; g = 9.81
@@ -136,12 +131,10 @@ class CrazyflieTrackingEnv(gym.Env):
         return rw
 
 
-# ═══════════════════════════════════════════════════════════
-# 2. Policy Network
-# ═══════════════════════════════════════════════════════════
+# ---- Policy network ------------------------------------------------------
 
 class PolicyNet(nn.Module):
-    """Small MLP policy: obs(20) → action(4)."""
+    """Small MLP policy: obs(20) -> action(4)."""
     
     def __init__(self, obs_dim=20, act_dim=4, hidden=64):
         super().__init__()
@@ -158,9 +151,7 @@ class PolicyNet(nn.Module):
         return self.net(x)
 
 
-# ═══════════════════════════════════════════════════════════
-# 3. MPC Expert
-# ═══════════════════════════════════════════════════════════
+# ---- MPC expert ----------------------------------------------------------
 
 class MPCExpert:
     """C ADMM MPC as the expert teacher."""
@@ -189,9 +180,7 @@ class MPCExpert:
         return u
 
 
-# ═══════════════════════════════════════════════════════════
-# 4. DAgger Pipeline
-# ═══════════════════════════════════════════════════════════
+# ---- DAgger pipeline -----------------------------------------------------
 
 def collect_expert_data(env, expert, n_episodes=5):
     """Roll out MPC expert, collect (obs, action) pairs."""
@@ -309,27 +298,23 @@ def evaluate_policy(env, policy, expert, device, label=""):
     t_p = np.median(times_policy) * 1e6
     t_e = np.median(times_expert) * 1e6
     
-    print(f"  {label:<20s} | Policy: {ss_p*1000:6.1f}mm @ {t_p:6.0f}μs | "
-          f"MPC: {ss_e*1000:6.1f}mm @ {t_e:6.0f}μs | "
-          f"Speedup: {t_e/max(t_p,1):.0f}×")
+    print(f"  {label:<20s} | Policy: {ss_p*1000:6.1f}mm @ {t_p:6.0f}us | "
+          f"MPC: {ss_e*1000:6.1f}mm @ {t_e:6.0f}us | "
+          f"Speedup: {t_e/max(t_p,1):.0f}x")
     
     return errors_policy, errors_expert, times_policy, times_expert
 
 
-# ═══════════════════════════════════════════════════════════
-# 5. Main Pipeline
-# ═══════════════════════════════════════════════════════════
+# ---- Main pipeline -------------------------------------------------------
 
 def run_dagger(n_dagger_iters=5, n_expert_episodes=5, n_dagger_episodes=3,
                bc_epochs=100, dagger_epochs=50):
     
     device = torch.device('cpu')  # small network, CPU is faster
     
-    print("="*65)
-    print("  DAgger: MPC → RL Distillation")
-    print("  Teacher: C ADMM (38μs, 3.7mm)")
+    print("[DAgger] MPC -> RL distillation")
+    print("  Teacher: C ADMM (38us, 3.7mm)")
     print("  Student: 2-layer MLP (64 hidden, ~2K params)")
-    print("="*65)
     
     env = CrazyflieTrackingEnv(dt=0.01, episode_length=10.0)
     expert = MPCExpert(dt=0.01)
@@ -340,25 +325,25 @@ def run_dagger(n_dagger_iters=5, n_expert_episodes=5, n_dagger_episodes=3,
     n_params = sum(p.numel() for p in policy.parameters())
     print(f"  Policy: {n_params} parameters ({n_params*4/1024:.1f} KB)\n")
     
-    # ═══ Step 1: Collect expert demonstrations ═══
+    # Step 1: collect expert demonstrations.
     print("Step 1: Collecting MPC expert demonstrations...")
     t0 = time.time()
     obs_data, act_data = collect_expert_data(env, expert, n_episodes=n_expert_episodes)
     print(f"  Collected {len(obs_data)} samples from {n_expert_episodes} episodes "
           f"({time.time()-t0:.1f}s)")
     
-    # ═══ Step 2: Behavioral cloning ═══
+    # ---- Step 2: behavioral cloning ----------------------------------
     print("\nStep 2: Behavioral cloning (supervised learning on expert data)...")
     losses_bc = train_policy(policy, optimizer, obs_data, act_data, device,
                              epochs=bc_epochs, batch_size=256)
-    print(f"  BC loss: {losses_bc[0]:.4f} → {losses_bc[-1]:.4f}")
+    print(f"  BC loss: {losses_bc[0]:.4f} -> {losses_bc[-1]:.4f}")
     
     print("\n  Evaluation after BC:")
     eval_results = []
     errs_p, errs_e, _, _ = evaluate_policy(env, policy, expert, device, "After BC")
     eval_results.append(('BC', np.array(errs_p), np.array(errs_e)))
     
-    # ═══ Step 3: DAgger iterations ═══
+    # ---- Step 3: DAgger iterations -----------------------------------
     all_losses = [losses_bc[-1]]
     
     for dagger_iter in range(n_dagger_iters):
@@ -386,21 +371,19 @@ def run_dagger(n_dagger_iters=5, n_expert_episodes=5, n_dagger_episodes=3,
                                                 f"DAgger iter {dagger_iter+1}")
         eval_results.append((f'DAgger-{dagger_iter+1}', np.array(errs_p), np.array(errs_e)))
     
-    # ═══ Final evaluation ═══
-    print(f"\n{'='*65}")
-    print("  Final Comparison")
-    print(f"{'='*65}")
+    # ---- Final evaluation ---------
+    print("\n  Final Comparison")
     errs_final_p, errs_final_e, times_p, times_e = evaluate_policy(
         env, policy, expert, device, "FINAL")
     
-    # ═══ Plots ═══
+    # ---- Plots -------------------------------------------------------
     t = np.arange(len(errs_final_p)) * env.dt
     t_e = np.arange(len(errs_final_e)) * env.dt
     skip = int(2.0 / env.dt)
     
     fig, axes = plt.subplots(2, 3, figsize=(16, 9))
-    fig.suptitle('DAgger: MPC → RL Policy Distillation\n'
-                 'Teacher: C ADMM (3.7mm, 38μs) → Student: 2-layer MLP',
+    fig.suptitle('DAgger: MPC -> RL Policy Distillation\n'
+                 'Teacher: C ADMM (3.7mm, 38us) -> Student: 2-layer MLP',
                  fontsize=13, fontweight='bold')
     
     # 1) Tracking error comparison
@@ -426,11 +409,11 @@ def run_dagger(n_dagger_iters=5, n_expert_episodes=5, n_dagger_episodes=3,
     times_bar = [np.median(times_e)*1e6, np.median(times_p)*1e6]
     colors_bar = ['#2980b9', '#e74c3c']
     bars = ax.bar(labels_bar, times_bar, color=colors_bar, alpha=0.8)
-    ax.set_ylabel('Inference Time [μs]'); ax.set_title('Speed Comparison')
+    ax.set_ylabel('Inference Time [us]'); ax.set_title('Speed Comparison')
     ax.set_yscale('log'); ax.grid(True, alpha=0.3, axis='y')
     for bar, val in zip(bars, times_bar):
         ax.text(bar.get_x()+bar.get_width()/2, bar.get_height()*1.2,
-                f'{val:.0f}μs', ha='center', fontsize=11, fontweight='bold')
+                f'{val:.0f}us', ha='center', fontsize=11, fontweight='bold')
     
     # 4) Error over DAgger iterations
     ax = axes[1, 0]
@@ -466,14 +449,14 @@ def run_dagger(n_dagger_iters=5, n_expert_episodes=5, n_dagger_episodes=3,
     t_mpc = np.median(times_e)*1e6
     t_pol = np.median(times_p)*1e6
     summary = (
-        f"{'DAgger Results':^40s}\n{'─'*40}\n"
-        f"{'':20s}{'MPC':>10s}{'Policy':>10s}\n{'─'*40}\n"
+        f"{'DAgger Results':^40s}\n{'-'*40}\n"
+        f"{'':20s}{'MPC':>10s}{'Policy':>10s}\n{'-'*40}\n"
         f"{'SS-RMSE [mm]':20s}{ss_mpc:>9.1f} {ss_pol:>9.1f}\n"
-        f"{'Inference [μs]':20s}{t_mpc:>9.0f} {t_pol:>9.0f}\n"
-        f"{'Speedup':20s}{'1×':>9s} {t_mpc/max(t_pol,1):>8.0f}×\n"
+        f"{'Inference [us]':20s}{t_mpc:>9.0f} {t_pol:>9.0f}\n"
+        f"{'Speedup':20s}{'1x':>9s} {t_mpc/max(t_pol,1):>8.0f}x\n"
         f"{'Parameters':20s}{'N/A':>9s} {n_params:>9d}\n"
-        f"{'Model size':20s}{'—':>9s} {n_params*4/1024:>7.1f}KB\n"
-        f"{'─'*40}\n"
+        f"{'Model size':20s}{'-':>9s} {n_params*4/1024:>7.1f}KB\n"
+        f"{'-'*40}\n"
         f"DAgger iterations: {n_dagger_iters}\n"
         f"Expert episodes: {n_expert_episodes}\n"
         f"Total training samples: {len(obs_data)}\n"
@@ -485,12 +468,12 @@ def run_dagger(n_dagger_iters=5, n_expert_episodes=5, n_dagger_episodes=3,
     plt.tight_layout(rect=[0, 0, 1, 0.93])
     plt.savefig(str(Path(__file__).parent.parent / 'results' / 'dagger_results.png'),
                 dpi=150, bbox_inches='tight')
-    print(f"\n  ✓ Saved results/dagger_results.png")
+    print(f"\n  Saved results/dagger_results.png")
     
     # Save policy
     torch.save(policy.state_dict(),
                str(Path(__file__).parent.parent / 'results' / 'dagger_policy.pt'))
-    print(f"  ✓ Saved results/dagger_policy.pt ({n_params*4/1024:.1f} KB)")
+    print(f"  Saved results/dagger_policy.pt ({n_params*4/1024:.1f} KB)")
     
     return policy, eval_results
 

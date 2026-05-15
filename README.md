@@ -1,6 +1,6 @@
 # Quadrotor MPC: Structure-Exploiting C ADMM, Solver Benchmarks, Neural Distillation
 
-**A 458-line C ADMM solver for embedded quadrotor MPC at 9.4 µs / step — 22× faster than tuned OSQP, 196× faster than ReLU-QP at batch=1 — distilled into a 5,764-parameter MLP that runs in 2.1 µs.**
+**A 458-line C ADMM solver for embedded quadrotor MPC at 9.4 µs / step — 22× faster than tuned OSQP, 196× faster than ReLU-QP at batch=1 — distilled into a 6,276-parameter MLP that runs in 2.1 µs.**
 
 <!-- Headline video. Drag videos/c_admm_fig8.mp4 onto the GitHub README editor
      to get a CDN asset URL and replace this <img> with a <video autoplay loop muted>. -->
@@ -11,7 +11,7 @@
 | **C ADMM, tuned (ρ=3)**                 | **9.4 µs**   | **3.42 mm**| Intel i9-14900HX, single core  |
 | OSQP, tuned                             | 203.4 µs     | 4.86 mm    | Intel i9-14900HX, single core  |
 | ReLU-QP, batch=1, fp64                  | 1,841.7 µs   | 4.85 mm    | NVIDIA L40S                    |
-| **Distilled MLP (5,764 params)**        | **2.1 µs**   | **4.1 mm** | Intel i9-14900HX, single core  |
+| **Distilled MLP (6,276 params)**        | **2.1 µs**   | **4.1 mm** | Intel i9-14900HX, single core  |
 
 > 22× faster than tuned OSQP at matched accuracy; the distilled policy then collapses the entire MPC stack into one matmul chain at another 4.5× over C ADMM.
 
@@ -19,7 +19,7 @@ Vrishabh Kenkre — CMU MS Mechanical Engineering, Robotics & Controls, 2026 —
 
 ## What this is
 
-Real-time model-predictive control of small quadrotors is bottlenecked by the QP solver inside the control loop, not by the dynamics or the cost function. Off-the-shelf sparse solvers like OSQP burn ~14 µs per ADMM iteration on a sparse Cholesky update; for a $20$-step Crazyflie linear MPC that floor is ~200 µs/solve. This repo replaces that with a hand-rolled 458-line C ADMM solver that caches the infinite-horizon Riccati recursion and reduces the per-iteration work to $12{\times}12$ block operations. At 9.4 µs/solve on a single laptop CPU core it is fast enough to leave most of a 10 ms control budget free for everything else on the embedded stack; distilling it into a 5,764-parameter MLP collapses the entire pipeline into one matmul chain at 2.1 µs with the dynamics model and solver gone from the deployment binary.
+Real-time model-predictive control of small quadrotors is bottlenecked by the QP solver inside the control loop, not by the dynamics or the cost function. Off-the-shelf sparse solvers like OSQP burn ~14 µs per ADMM iteration on a sparse Cholesky update; for a $20$-step Crazyflie linear MPC that floor is ~200 µs/solve. This repo replaces that with a hand-rolled 458-line C ADMM solver that caches the infinite-horizon Riccati recursion and reduces the per-iteration work to $12{\times}12$ block operations. At 9.4 µs/solve on a single laptop CPU core it is fast enough to leave most of a 10 ms control budget free for everything else on the embedded stack; distilling it into a 6,276-parameter MLP collapses the entire pipeline into one matmul chain at 2.1 µs with the dynamics model and solver gone from the deployment binary.
 
 ## More demos
 
@@ -74,7 +74,7 @@ src/dagger.py                  DAgger distillation pipeline
 src/dart_pipeline.py           DAgger + DART variants (six-way IL comparison)
 src/policy_inference.{c,h}     Distilled-policy C inference (~2 µs per call)
 src/policy_inference_py.py     ctypes wrapper around libpolicy_inference.so
-src/policy_weights.h           Exported policy weights (5,764 params; see Known issues)
+src/policy_weights.h           Exported policy weights (6,276 params)
 src/record_video.py            MuJoCo closed-loop recorder w/ per-step solve-time overlay + CSV
 figures/three_way_pareto.py    Pareto plot generator (reads JSONs from results/)
 render_crazyflie.py            MuJoCo render of the platform figure

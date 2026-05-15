@@ -1,40 +1,28 @@
-/**
- * admm_core.h — Hand-Rolled ADMM Solver for Quadrotor MPC
- * =========================================================
- * 
- * Plain C implementation with no dependencies. All matrices are
- * statically sized (no malloc). Designed to be called from Python
- * via ctypes, but could equally run on a bare-metal microcontroller.
+/*
+ * admm_core.h -- hand-rolled ADMM solver for quadrotor MPC.
  *
- * Follows TinyMPC (Nguyen et al., ICRA 2024) architecture:
- *   - Cached Riccati matrices (precomputed offline)
- *   - 5-step ADMM iteration (backward, forward, clamp, dual, check)
- *   - Warm starting between solves
+ * Plain C, no dependencies. Statically sized (no malloc). Callable from
+ * Python via ctypes, or droppable onto a bare-metal microcontroller.
  *
- * State:   nx = 12  [px, py, pz, vx, vy, vz, phi, theta, psi, wx, wy, wz]
- * Control: nu = 4   [thrust, tau_x, tau_y, tau_z]
- * Horizon: N  = 20
- *
- * Author: Vrishabh Kenkre (CMU MS MechE)
+ * State NX=12, control NU=4, horizon NHORIZON=20.
  */
 
 #ifndef ADMM_CORE_H
 #define ADMM_CORE_H
 
-/* ═══ Problem Dimensions (compile-time constants) ═══ */
+/* ---- Problem dimensions (compile-time constants) --------- */
 #define NX 12       /* state dimension */
 #define NU 4        /* control dimension */
 #define NHORIZON 20 /* prediction horizon */
 
-/* ═══ Cached Riccati Matrices (precomputed offline in Python) ═══
+/* ---- Cached Riccati matrices (precomputed offline in Python) ---------
  *
- * These come from solving the DARE with augmented costs Q̃ = Q + ρI, R̃ = R + ρI.
- * They encode the optimal LQR structure that ADMM exploits.
+ * From the DARE with augmented costs Q_tilde = Q + rho*I, R_tilde = R + rho*I.
  *
- * K_inf  [NU × NX]:  optimal feedback gain
- * P_inf  [NX × NX]:  infinite-horizon cost-to-go
- * C1     [NU × NU]:  (R̃ + Bd'P_inf·Bd)^{-1}  — for backward pass
- * C2     [NX × NX]:  (Ad - Bd·K_inf)'         — closed-loop A transposed
+ *   K_inf  [NU x NX]:  optimal feedback gain
+ *   P_inf  [NX x NX]:  infinite-horizon cost-to-go
+ *   C1     [NU x NU]:  (R_tilde + Bd'P_inf Bd)^{-1}, used in backward pass
+ *   C2     [NX x NX]:  (Ad - Bd K_inf)', closed-loop A transposed
  */
 typedef struct {
     double K_inf[NU * NX];       /* row-major: K_inf[i*NX + j] */
@@ -55,7 +43,7 @@ typedef struct {
     double rho;                  /* ADMM penalty parameter */
 } ADMMCache;
 
-/* ═══ ADMM Variables (persist between solves for warm starting) ═══ */
+/* ---- ADMM variables (persist between solves for warm starting) --------- */
 typedef struct {
     /* Primal variables */
     double x[NX * (NHORIZON + 1)];   /* states:   x[:, k] = x[k*NX .. (k+1)*NX-1] */
@@ -74,7 +62,7 @@ typedef struct {
     double d_ctrl[NU * NHORIZON];     /* affine control corrections */
 } ADMMVars;
 
-/* ═══ Solve Statistics ═══ */
+/* ---- Solve statistics --------- */
 typedef struct {
     int iterations;
     double primal_residual;
@@ -82,7 +70,7 @@ typedef struct {
     double solve_time_us;  /* microseconds */
 } ADMMStats;
 
-/* ═══ Function Declarations ═══ */
+/* ---- Function declarations --------- */
 
 /**
  * Initialize all ADMM variables to zero.
@@ -96,8 +84,8 @@ void admm_init(ADMMVars *vars);
  * @param cache     Precomputed Riccati matrices + problem data
  * @param vars      ADMM variables (warm-started from previous solve)
  * @param x0        Current measured state [NX]
- * @param x_ref     Reference trajectory [NX × (NHORIZON+1)], column-major
- * @param u_ref     Reference controls [NU × NHORIZON], column-major
+ * @param x_ref     Reference trajectory [NX x (NHORIZON+1)], column-major
+ * @param u_ref     Reference controls [NU x NHORIZON], column-major
  * @param max_iter  Maximum ADMM iterations
  * @param eps_abs   Absolute convergence tolerance
  * @param u_out     Output: optimal first control [NU]

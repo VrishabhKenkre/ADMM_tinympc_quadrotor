@@ -1,7 +1,6 @@
 /*
- * policy_inference.h
- * ------------------
- * Plain-C forward pass for the DAgger-distilled quadrotor MPC student.
+ * policy_inference.h -- plain-C forward pass for the DAgger-distilled
+ * quadrotor MPC student.
  *
  * Architecture (from src/dagger.py PolicyNet):
  *

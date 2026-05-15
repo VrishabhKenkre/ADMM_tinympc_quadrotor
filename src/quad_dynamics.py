@@ -1,33 +1,9 @@
-"""
-quad_dynamics.py — Quadrotor Dynamics with CasADi
-==================================================
-Nonlinear 12-state quadrotor model with analytical linearization
-and discretization for MPC formulations.
+"""quad_dynamics.py -- 12-state quadrotor dynamics with CasADi.
 
-State: x = [px, py, pz, vx, vy, vz, φ, θ, ψ, ωx, ωy, ωz] ∈ ℝ¹²
-  pos:   world frame position
-  vel:   world frame linear velocity
-  euler: ZYX Euler angles (roll φ, pitch θ, yaw ψ)
-  omega: body frame angular velocity
-
-Control: u = [T, τx, τy, τz] ∈ ℝ⁴
-  T:    total thrust along body z-axis [N]
-  τi:   body torques [N·m]
-
-Dynamics (Newton-Euler):
-  ṗ = v
-  v̇ = R(φ,θ,ψ) · [0; 0; T/m] + [0; 0; -g]
-  Euleṙ = W(φ,θ) · ω
-  Iω̇ = τ - ω × (Iω)
-
-where R is the body→world rotation matrix and W maps body rates to Euler rates.
-
-References:
-  - Mellinger & Kumar (ICRA 2011), "Minimum Snap Trajectory Generation"
-  - Nguyen et al. (ICRA 2024), "TinyMPC" — uses this exact model for Crazyflie
-  - Landry (2015), MIT MS Thesis — Crazyflie system identification
-
-Author: Vrishabh Kenkre (CMU MS MechE)
+Nonlinear Newton-Euler model with state x = [pos, vel, rpy, omega]
+(world-frame translation, body-frame angular velocity, ZYX Euler) and
+control u = [thrust, tau_xyz]. Provides analytical linearization at
+hover and discretization for MPC formulations.
 """
 
 import numpy as np
@@ -51,9 +27,9 @@ class QuadParams:
     
     # Actuator limits
     thrust_min: float = 0.0              # N
-    thrust_max: float = 0.60             # N (TWR ≈ 2.27, realistic)
-    torque_rp_max: float = 0.0069        # N·m (roll/pitch: arm × motor_thrust)
-    torque_yaw_max: float = 0.0036       # N·m (yaw: reactive torque)
+    thrust_max: float = 0.60             # N (TWR ~ 2.27, realistic)
+    torque_rp_max: float = 0.0069        # N*m (roll/pitch: arm * motor_thrust)
+    torque_yaw_max: float = 0.0036       # N*m (yaw: reactive torque)
     
     # Arm length (for reference)
     arm_length: float = 0.046            # m
@@ -77,16 +53,14 @@ class QuadParams:
                          self.torque_rp_max, self.torque_yaw_max])
 
 
-# ═══════════════════════════════════════════════════════════════
-# NONLINEAR DYNAMICS (CasADi symbolic)
-# ═══════════════════════════════════════════════════════════════
+# ---- Nonlinear dynamics (CasADi symbolic) --------------------------------
 
 def build_nonlinear_dynamics(p: QuadParams) -> ca.Function:
     """Build CasADi function for continuous-time nonlinear dynamics.
     
     ẋ = f(x, u)
     
-    Returns a CasADi Function: f(x[12], u[4]) → ẋ[12]
+    Returns a CasADi Function: f(x[12], u[4]) -> x_dot[12].
     """
     # Symbolic variables
     x = ca.SX.sym('x', 12)
@@ -104,7 +78,7 @@ def build_nonlinear_dynamics(p: QuadParams) -> ca.Function:
     tau_y = u[2]      # pitch torque
     tau_z = u[3]      # yaw torque
     
-    # ═══ Rotation matrix R_body_to_world (ZYX Euler) ═══
+    # ---- Rotation matrix R_body_to_world (ZYX Euler) -----------------
     cphi = ca.cos(phi);   sphi = ca.sin(phi)
     cth  = ca.cos(theta); sth  = ca.sin(theta)
     cpsi = ca.cos(psi);   spsi = ca.sin(psi)
@@ -115,7 +89,7 @@ def build_nonlinear_dynamics(p: QuadParams) -> ca.Function:
         ca.horzcat(-sth,     cth*sphi,                   cth*cphi)
     )
     
-    # ═══ Translational dynamics ═══
+    # ---- Translational dynamics --------------------------------------
     # v̇ = R · [0; 0; T/m] + [0; 0; -g]
     thrust_body = ca.vertcat(0, 0, T / p.mass)
     thrust_world = R @ thrust_body
@@ -123,7 +97,7 @@ def build_nonlinear_dynamics(p: QuadParams) -> ca.Function:
     
     vel_dot = thrust_world + gravity
     
-    # ═══ Euler rate matrix W ═══
+    # ---- Euler rate matrix W -----------------------------------------
     # Maps body angular velocity to Euler angle rates
     # [φ̇]   [1   sinφ·tanθ   cosφ·tanθ] [ωx]
     # [θ̇] = [0   cosφ        -sinφ     ] [ωy]
@@ -141,7 +115,7 @@ def build_nonlinear_dynamics(p: QuadParams) -> ca.Function:
     omega = ca.vertcat(wx, wy, wz)
     euler_dot = W @ omega
     
-    # ═══ Rotational dynamics (Euler's equation) ═══
+    # ---- Rotational dynamics (Euler's equation) ----------------------
     # I·ω̇ = τ - ω × (I·ω)
     tau = ca.vertcat(tau_x, tau_y, tau_z)
     I_omega = ca.vertcat(p.Ixx * wx, p.Iyy * wy, p.Izz * wz)
@@ -153,7 +127,7 @@ def build_nonlinear_dynamics(p: QuadParams) -> ca.Function:
         (tau_z - (p.Ixx - p.Iyy) * wx * wy) / p.Izz
     )
     
-    # ═══ Full state derivative ═══
+    # ---- Full state derivative ---------------------------------------
     x_dot = ca.vertcat(
         vel,           # ṗ = v
         vel_dot,       # v̇ = R·[0;0;T/m] + g
@@ -175,7 +149,7 @@ def build_rk4_integrator(p: QuadParams, dt: float) -> ca.Function:
         dt: integration timestep [s]
     
     Returns:
-        CasADi Function: F(x[12], u[4]) → x_next[12]
+        CasADi Function: F(x[12], u[4]) -> x_next[12].
     """
     f_cont = build_nonlinear_dynamics(p)
     
@@ -198,9 +172,7 @@ def build_rk4_integrator(p: QuadParams, dt: float) -> ca.Function:
                        ['x', 'u'], ['x_next'])
 
 
-# ═══════════════════════════════════════════════════════════════
-# LINEARIZATION AT HOVER
-# ═══════════════════════════════════════════════════════════════
+# ---- Linearization at hover ----------------------------------------------
 
 def linearize_at_hover(p: QuadParams) -> tuple:
     """Analytical linearization of quadrotor dynamics at hover.
@@ -227,33 +199,33 @@ def linearize_at_hover(p: QuadParams) -> tuple:
     Ac = np.zeros((12, 12))
     Bc = np.zeros((12, 4))
     
-    # ─── Position from velocity: ṗ = v ───
+    # Position from velocity: p_dot = v.
     Ac[0, 3] = 1.0   # dx/dvx
     Ac[1, 4] = 1.0   # dy/dvy
     Ac[2, 5] = 1.0   # dz/dvz
     
-    # ─── Velocity from orientation (gravity torque coupling) ───
-    # At hover, R ≈ I + skew(euler), so:
-    #   v̇x ≈ g·θ   (pitch forward → accelerate in x)
-    #   v̇y ≈ -g·φ  (roll right → accelerate in -y)
-    #   v̇z ≈ (T-mg)/m = δT/m
+    # Velocity from orientation (gravity torque coupling).
+    # At hover, R ~ I + skew(euler), so:
+    #   vx_dot ~  g*theta  (pitch forward -> accelerate in x)
+    #   vy_dot ~ -g*phi    (roll right    -> accelerate in -y)
+    #   vz_dot ~ (T-mg)/m = dT/m
     Ac[3, 7] = g      # dvx/dθ = g
     Ac[4, 6] = -g     # dvy/dφ = -g
     
-    # ─── Euler rates from angular velocity ───
+    # Euler rates from angular velocity.
     # At hover (φ=θ=0): W = I, so euler_dot = omega
     Ac[6, 9]  = 1.0   # dφ/dωx
     Ac[7, 10] = 1.0   # dθ/dωy
     Ac[8, 11] = 1.0   # dψ/dωz
     
-    # ─── Control input matrix ───
-    # Thrust → vz:  B(vz, T) = 1/m
+    # Control input matrix.
+    # Thrust -> vz: B(vz, T) = 1/m
     Bc[5, 0] = 1.0 / m
-    
-    # Torques → angular accelerations: B(ωi, τi) = 1/Iii
-    Bc[9,  1] = 1.0 / p.Ixx   # τx → ω̇x
-    Bc[10, 2] = 1.0 / p.Iyy   # τy → ω̇y
-    Bc[11, 3] = 1.0 / p.Izz   # τz → ω̇z
+
+    # Torques -> angular accelerations: B(omega_i, tau_i) = 1/Iii
+    Bc[9,  1] = 1.0 / p.Ixx
+    Bc[10, 2] = 1.0 / p.Iyy
+    Bc[11, 3] = 1.0 / p.Izz
     
     return Ac, Bc
 
@@ -265,14 +237,14 @@ def discretize_dynamics(Ac: np.ndarray, Bc: np.ndarray,
     x[k+1] = Ad·x[k] + Bd·u[k]
     
     Args:
-        Ac: continuous A matrix [n×n]
-        Bc: continuous B matrix [n×m]
+        Ac: continuous A matrix [n x n]
+        Bc: continuous B matrix [n x m]
         dt: timestep [s]
         method: 'expm' (exact) or 'euler' (first-order)
-    
+
     Returns:
-        Ad: discrete A matrix [n×n]
-        Bd: discrete B matrix [n×m]
+        Ad: discrete A matrix [n x n]
+        Bd: discrete B matrix [n x m]
     """
     n = Ac.shape[0]
     m = Bc.shape[1]
@@ -287,7 +259,7 @@ def discretize_dynamics(Ac: np.ndarray, Bc: np.ndarray,
         Ad = M_exp[:n, :n]
         Bd = M_exp[:n, n:]
     elif method == 'euler':
-        # First-order: Ad = I + Ac·dt, Bd = Bc·dt
+        # First-order: Ad = I + Ac*dt, Bd = Bc*dt
         Ad = np.eye(n) + Ac * dt
         Bd = Bc * dt
     else:
@@ -306,17 +278,15 @@ def compute_lqr_gain(Ad: np.ndarray, Bd: np.ndarray,
       3. Baseline controller for comparison
     
     Returns:
-        K: optimal feedback gain [m×n]
-        P: solution to DARE [n×n]
+        K: optimal feedback gain [m x n]
+        P: solution to DARE [n x n]
     """
     P = solve_discrete_are(Ad, Bd, Q, R)
     K = np.linalg.solve(R + Bd.T @ P @ Bd, Bd.T @ P @ Ad)
     return K, P
 
 
-# ═══════════════════════════════════════════════════════════════
-# CASADI JACOBIANS (for nonlinear MPC / verification)
-# ═══════════════════════════════════════════════════════════════
+# ---- CasADi Jacobians (for nonlinear MPC / verification) -----------------
 
 def build_jacobians(p: QuadParams) -> tuple:
     """Build CasADi functions for df/dx and df/du.
@@ -326,8 +296,8 @@ def build_jacobians(p: QuadParams) -> tuple:
       2. Online re-linearization for time-varying LTV-MPC
     
     Returns:
-        jac_x: CasADi Function(x, u) → ∂f/∂x [12×12]
-        jac_u: CasADi Function(x, u) → ∂f/∂u [12×4]
+        jac_x: CasADi Function(x, u) -> df/dx [12 x 12]
+        jac_u: CasADi Function(x, u) -> df/du [12 x 4]
     """
     f_cont = build_nonlinear_dynamics(p)
     
@@ -345,9 +315,7 @@ def build_jacobians(p: QuadParams) -> tuple:
     return jac_x, jac_u
 
 
-# ═══════════════════════════════════════════════════════════════
-# VERIFICATION / PRINTING
-# ═══════════════════════════════════════════════════════════════
+# ---- Verification / printing ---------------------------------------------
 
 def verify_linearization(p: QuadParams):
     """Cross-check analytical linearization against CasADi autodiff.
@@ -355,7 +323,7 @@ def verify_linearization(p: QuadParams):
     This is a critical verification step. If these don't match,
     the MPC will have wrong dynamics.
     """
-    print("═══ Linearization Verification ═══\n")
+    print("[verify] Linearization\n")
     
     # Analytical
     Ac_analytical, Bc_analytical = linearize_at_hover(p)
@@ -376,31 +344,31 @@ def verify_linearization(p: QuadParams):
     print(f"  Max |Bc_analytical - Bc_casadi| = {err_B:.2e}")
     
     if err_A < 1e-10 and err_B < 1e-10:
-        print("  ✓ PASS: Linearizations match perfectly\n")
+        print("  PASS: Linearizations match perfectly\n")
     else:
-        print("  ✗ FAIL: Linearizations differ!\n")
+        print("  FAIL: Linearizations differ!\n")
         print("  Ac analytical:\n", Ac_analytical)
         print("  Ac CasADi:\n", Ac_casadi)
     
     # Print key values
     print("  Key B matrix entries (control authority):")
-    print(f"    B(vz, T)  = 1/m      = {1/p.mass:.2f}")
-    print(f"    B(ωx, τx) = 1/Ixx    = {1/p.Ixx:.0f}")
-    print(f"    B(ωy, τy) = 1/Iyy    = {1/p.Iyy:.0f}")
-    print(f"    B(ωz, τz) = 1/Izz    = {1/p.Izz:.0f}")
-    print(f"\n  A(vx, θ) = g = {p.g}")
-    print(f"  A(vy, φ) = -g = {-p.g}")
+    print(f"    B(vz, T)        = 1/m   = {1/p.mass:.2f}")
+    print(f"    B(wx, tau_x)    = 1/Ixx = {1/p.Ixx:.0f}")
+    print(f"    B(wy, tau_y)    = 1/Iyy = {1/p.Iyy:.0f}")
+    print(f"    B(wz, tau_z)    = 1/Izz = {1/p.Izz:.0f}")
+    print(f"\n  A(vx, theta) =  g = {p.g}")
+    print(f"  A(vy, phi)   = -g = {-p.g}")
     
     return Ac_analytical, Bc_analytical
 
 
 def print_discrete_system(Ad: np.ndarray, Bd: np.ndarray, dt: float):
     """Pretty-print the discrete system matrices."""
-    print(f"\n═══ Discrete System (dt = {dt*1000:.0f} ms) ═══\n")
-    
+    print(f"\n[discrete system] dt = {dt*1000:.0f} ms\n")
+
     print("  Ad (non-identity entries):")
     n = Ad.shape[0]
-    state_names = ['px','py','pz','vx','vy','vz','φ','θ','ψ','ωx','ωy','ωz']
+    state_names = ['px','py','pz','vx','vy','vz','phi','theta','psi','wx','wy','wz']
     for i in range(n):
         for j in range(n):
             val = Ad[i, j]
@@ -410,9 +378,9 @@ def print_discrete_system(Ad: np.ndarray, Bd: np.ndarray, dt: float):
             else:
                 if abs(val) > 1e-10:
                     print(f"    Ad[{state_names[i]},{state_names[j]}] = {val:.6f}")
-    
+
     print("\n  Bd (nonzero entries):")
-    ctrl_names = ['T', 'τx', 'τy', 'τz']
+    ctrl_names = ['T', 'tau_x', 'tau_y', 'tau_z']
     for i in range(Bd.shape[0]):
         for j in range(Bd.shape[1]):
             if abs(Bd[i, j]) > 1e-10:
@@ -422,15 +390,13 @@ def print_discrete_system(Ad: np.ndarray, Bd: np.ndarray, dt: float):
 if __name__ == '__main__':
     p = QuadParams()
     
-    print("╔═══════════════════════════════════════════════╗")
-    print("║  Quadrotor Dynamics — CasADi + Linearization  ║")
-    print("╚═══════════════════════════════════════════════╝\n")
+    print("[quad_dynamics] CasADi + linearization\n")
     
     print(f"  Mass: {p.mass} kg")
     print(f"  Hover thrust: {p.hover_thrust:.5f} N")
     print(f"  Inertia: [{p.Ixx:.2e}, {p.Iyy:.2e}, {p.Izz:.2e}]")
     print(f"  Thrust range: [{p.thrust_min}, {p.thrust_max}] N")
-    print(f"  Torque range: ±{p.torque_max:.1e} N·m")
+    print(f"  Torque range: +/-{p.torque_max:.1e} N*m")
     print(f"  TWR: {p.thrust_max / p.hover_thrust:.2f}")
     print()
     
@@ -446,12 +412,12 @@ if __name__ == '__main__':
     Q = np.diag([10, 10, 10, 1, 1, 1, 5, 5, 1, 0.1, 0.1, 0.1])
     R = np.diag([100, 1e4, 1e4, 1e4])
     K, P = compute_lqr_gain(Ad, Bd, Q, R)
-    print(f"\n═══ LQR Gain (12×4) ═══")
-    print(f"  ‖K‖ = {np.linalg.norm(K):.4f}")
+    print(f"\n[LQR gain 12x4]")
+    print(f"  ||K|| = {np.linalg.norm(K):.4f}")
     print(f"  K eigenvalue spread: {np.max(np.abs(np.linalg.eigvals(Ad - Bd @ K))):.4f} (should be < 1)")
-    
+
     # Verify RK4 integrator consistency
-    print(f"\n═══ RK4 Integrator Check ═══")
+    print(f"\n[RK4 integrator check]")
     F_rk4 = build_rk4_integrator(p, dt_mpc)
     x0 = np.zeros(12); x0[2] = 1.0  # hover at 1m
     u_hover = np.array([p.hover_thrust, 0, 0, 0])

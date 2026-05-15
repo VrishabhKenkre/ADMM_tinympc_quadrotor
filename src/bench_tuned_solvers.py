@@ -1,9 +1,11 @@
-"""bench_tuned_solvers.py — Tuned ADMM (rho=3, max_iter=50, eps=1e-3) vs
-Tuned OSQP (eps=1e-5, max_iter=500, no polish) on figure-8.
+"""bench_tuned_solvers.py -- tuned C ADMM vs tuned OSQP on figure-8.
 
-This replaces the benchmark_tuned_final.png with the actually-tuned numbers.
-The original config (rho=1, max_iter=200, eps=1e-4) is kept for the
-'paper reproduction' plot which exactly matches the 3.72 mm / 59 us number.
+Tuned C ADMM (rho=3, max_iter=50, eps=1e-3) vs tuned OSQP (eps=1e-5,
+max_iter=500, no polish). The original (rho=1, max_iter=200, eps=1e-4)
+configuration is kept alongside to reproduce the 3.72 mm / 59 us paper plot.
+
+Run from the repository root:
+    python3 src/bench_tuned_solvers.py
 """
 import sys, time
 sys.path.insert(0, '.')
@@ -103,7 +105,7 @@ ax.plot(osqp_tuned['xs'][0, :TOTAL], osqp_tuned['xs'][1, :TOTAL], 'C1', lw=1.2, 
 ax.plot(admm_tuned['xs'][0, :TOTAL], admm_tuned['xs'][1, :TOTAL], 'C0', lw=1.0, alpha=0.85,
         label=f"C ADMM tuned ({admm_tuned['rmse_mm']:.1f} mm)")
 ax.set_aspect('equal'); ax.set_xlabel('x [m]'); ax.set_ylabel('y [m]')
-ax.set_title(f'Figure-8 @ 100 Hz, peak ≈ 0.79 m/s\n(both solvers at their speed-optimal tuned settings)')
+ax.set_title(f'Figure-8 @ 100 Hz, peak ~ 0.79 m/s\n(both solvers at their speed-optimal tuned settings)')
 ax.legend(loc='upper right', fontsize=9); ax.grid(alpha=0.3)
 
 # --- Right: latency histogram, log-x ---

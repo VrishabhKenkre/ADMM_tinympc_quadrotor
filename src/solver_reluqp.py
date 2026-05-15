@@ -1,25 +1,14 @@
 """
-solver_reluqp.py — ReLU-QP Solver for MPC (Condensed Formulation)
-===================================================================
-Uses the REX Lab's ReLU-QP (ICRA 2024) to solve the MPC QP.
+solver_reluqp.py -- ReLU-QP solver for MPC, condensed formulation.
 
-KEY INSIGHT: The sparse formulation (states + controls as variables, 332 vars,
-584 constraints including 240 dynamics equalities) causes ReLU-QP to diverge
-because the adaptive rho oscillates between satisfying equalities and inequalities.
+Wraps REX Lab's ReLU-QP (Bishop et al., ICRA 2024). The sparse MPC form
+(332 vars, 584 constraints with 240 dynamics equalities) makes ReLU-QP's
+adaptive rho oscillate; the condensed form (states eliminated via prediction
+matrices; 80 vars, 80 control-box constraints) converges in ~25 warm-started
+iterations.
 
-The fix: CONDENSED formulation. Eliminate states via prediction matrices:
-    x[k] = A^k * x0 + sum(A^(k-1-j) * B * u[j]) + gravity_terms
-Only controls remain as decision variables (80 vars, 80 constraints).
-W matrix shrinks from 1500x1500 to 320x320. Converges in 25 warm-started
-iterations instead of diverging at 8000.
-
-On GPU, the 320x320 matmul at 25 iterations runs in ~50-100us.
-
-References:
-    Bishop et al. (ICRA 2024), "ReLU-QP: A GPU-Accelerated QP Solver for MPC"
-    Section IV: uses "preconditioned condensed formulation" for MPC benchmarks
-
-Author: Vrishabh Kenkre (CMU MS MechE)
+Run from the repository root:
+    python3 src/solver_reluqp.py
 """
 
 import numpy as np
@@ -54,7 +43,7 @@ class ReLUQP_MPC:
         P_t = solve_discrete_are(Ad, Bd, Q, R)
         nx, nu = self.nx, self.nu
         
-        # ═══ Prediction matrices ═══
+        # ---- Prediction matrices -----------------------------------------
         Phi = [np.eye(nx)]
         for k in range(1, N+1):
             Phi.append(Ad @ Phi[-1])
@@ -70,7 +59,7 @@ class ReLUQP_MPC:
             for j in range(k):
                 self.Gamma[k*nx:(k+1)*nx, j*nu:(j+1)*nu] = np.linalg.matrix_power(Ad, k-1-j) @ Bd
         
-        # ═══ Condensed cost ═══
+        # ---- Condensed cost ----------------------------------------------
         Q_stack = np.zeros(((N+1)*nx, (N+1)*nx))
         for k in range(N): Q_stack[k*nx:(k+1)*nx, k*nx:(k+1)*nx] = Q
         Q_stack[N*nx:, N*nx:] = P_t
@@ -82,12 +71,12 @@ class ReLUQP_MPC:
         self.GtQ = self.Gamma.T @ Q_stack
         self.u_hover_stack = np.tile(u_hover, N)
         
-        # ═══ Control-bounds-only constraints ═══
+        # ---- Control-bounds-only constraints -----------------------------
         A_con = np.eye(N*nu)
         l_con = np.tile(u_min, N)
         u_con = np.tile(u_max, N)
         
-        # ═══ Setup solver ═══
+        # ---- Setup solver ------------------------------------------------
         self.solver = reluqp.ReLU_QP()
         self.solver.setup(
             H=torch.from_numpy(self.H_c).double(),
@@ -108,7 +97,7 @@ class ReLUQP_MPC:
               f"W={n_var+2*n_con}x{n_var+2*n_con}, device={self.device}")
     
     def solve(self, x_current, x_ref):
-        """Solve MPC. x_ref: [nx x (N+1)]."""
+        """Solve MPC. x_ref shape (nx, N+1)."""
         x_free = self.Phi_stack @ x_current + self.gamma
         x_ref_flat = x_ref.T.flatten()
         f_c = self.GtQ @ (x_free - x_ref_flat) - self.R_stack @ self.u_hover_stack
@@ -164,7 +153,7 @@ if __name__ == '__main__':
             u_min=p.u_min,u_max=p.u_max,x_min=xlo,x_max=xhi,u_hover=uh,
             gravity_offset=dg)),
     ]:
-        print(f"\n{'='*60}\n  {name} — Figure-8, 100Hz\n{'='*60}")
+        print(f"\n[{name}] Figure-8, 100Hz")
         s=solver_cls(**kwargs)
         env=CrazyflieEnv(model_path=mp,dt_sim=0.002,dt_ctrl=dt)
         x=env.reset(pos=ref[0:3,0]); xl=np.zeros((12,ts+1)); xl[:,0]=x
@@ -177,4 +166,4 @@ if __name__ == '__main__':
         ss=np.sqrt(np.mean(err[skip:]**2))
         st=np.median(np.array(s.solve_times))*1e6
         it=np.median(np.array(s.iterations_log))
-        print(f"  SS-RMSE: {ss*1000:.1f}mm | Solve: {st:.0f}μs | Iters: {it:.0f}")
+        print(f"  SS-RMSE: {ss*1000:.1f}mm | Solve: {st:.0f}us | Iters: {it:.0f}")

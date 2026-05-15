@@ -1,17 +1,12 @@
 """
-solver_admm_c.py — Python wrapper for the C ADMM solver
-=========================================================
-Loads the compiled libadmm.so via ctypes and provides the same
-interface as the pure Python ADMMSolver.
+solver_admm_c.py -- Python wrapper for the C ADMM solver.
 
-The C code handles the hot loop (backward pass, forward pass,
-clamp, dual update). Python handles everything else (dynamics
-setup, reference generation, MuJoCo simulation, plotting).
+Loads the compiled libadmm.so via ctypes and exposes the same interface
+as the pure-Python ADMMSolver. The C code runs the hot loop; Python
+handles dynamics setup, reference generation, and MuJoCo simulation.
 
-Compilation:
-    cd src && gcc -O3 -shared -fPIC -o libadmm.so admm_core.c -lm
-
-Author: Vrishabh Kenkre (CMU MS MechE)
+Run from the repository root:
+    python3 src/solver_admm_c.py [mode] [duration]
 """
 
 import numpy as np
@@ -24,7 +19,7 @@ import time
 from typing import Optional, Tuple
 
 
-# ═══ C struct definitions mirrored in Python ═══
+# ---- C struct definitions mirrored in Python -----------------------------
 
 NX = 12
 NU = 4
@@ -78,7 +73,7 @@ class ADMMStats(ctypes.Structure):
 
 
 def _compile_if_needed(src_dir: Path) -> Path:
-    """Compile admm_core.c → libadmm.so if not already compiled."""
+    """Compile admm_core.c -> libadmm.so if not already compiled."""
     so_path = src_dir / "libadmm.so"
     c_path = src_dir / "admm_core.c"
     h_path = src_dir / "admm_core.h"
@@ -91,7 +86,7 @@ def _compile_if_needed(src_dir: Path) -> Path:
             needs_compile = True
     
     if needs_compile:
-        print("  Compiling admm_core.c → libadmm.so ...")
+        print("  Compiling admm_core.c -> libadmm.so ...")
         result = subprocess.run(
             ["gcc", "-O3", "-shared", "-fPIC", "-o", str(so_path),
              str(c_path), "-lm"],
@@ -99,7 +94,7 @@ def _compile_if_needed(src_dir: Path) -> Path:
         )
         if result.returncode != 0:
             raise RuntimeError(f"Compilation failed:\n{result.stderr}")
-        print(f"  ✓ Compiled ({so_path.stat().st_size} bytes)")
+        print(f"  Compiled ({so_path.stat().st_size} bytes)")
     
     return so_path
 
@@ -108,7 +103,7 @@ class CADMMSolver:
     """Python interface to the C ADMM solver.
     
     Same API as the pure Python ADMMSolver, but the hot loop
-    runs in compiled C. Expected 10-50× speedup over Python.
+    runs in compiled C. Expected 10-50x speedup over Python.
     """
     
     def __init__(self, Ad: np.ndarray, Bd: np.ndarray,
@@ -212,9 +207,9 @@ class CADMMSolver:
         
         Args:
             x0: current state [NX]
-            x_ref: reference trajectory [NX × (N+1)] — column-major
-            u_ref: reference controls [NU × N] — column-major (default: u_hover)
-        
+            x_ref: reference trajectory [NX x (N+1)], column-major
+            u_ref: reference controls [NU x N], column-major (default: u_hover)
+
         Returns:
             u_opt: optimal first control [NU]
             info: solve statistics
@@ -224,7 +219,7 @@ class CADMMSolver:
         
         # Prepare C-compatible arrays (column-major = Fortran order for trajectories)
         # Our convention: x_ref[:, k] = x_ref[k*NX : (k+1)*NX]
-        # numpy column k of x_ref (shape NX × N+1) → contiguous in Fortran order
+        # numpy column k of x_ref (shape NX x N+1) -> contiguous in Fortran order
         x_ref_flat = np.ascontiguousarray(x_ref.T.flatten())  # (N+1)*NX
         u_ref_flat = np.ascontiguousarray(u_ref.T.flatten())   # N*NU
         x0_flat = np.ascontiguousarray(x0.flatten())
@@ -323,10 +318,7 @@ def run_c_admm_sim(mode='fig8', duration=10.0):
     
     N_ref = ref.shape[1]
     
-    print(f"\n{'='*65}")
-    print(f"  C ADMM Solver — {title}")
-    print(f"  Horizon: {N}, dt={dt*1000:.0f}ms, compiled with gcc -O3")
-    print(f"{'='*65}\n")
+    print(f"\n[C ADMM] {title} -- horizon {N}, dt={dt*1000:.0f}ms, gcc -O3\n")
     
     solver = CADMMSolver(Ad, Bd, Q_diag, R_diag, N,
                          p.u_min, p.u_max, x_min, x_max,
@@ -337,8 +329,8 @@ def run_c_admm_sim(mode='fig8', duration=10.0):
     u_log = np.zeros((4, total_steps))
     x_log[:, 0] = x
     
-    print(f"  {'Time':>6s} │ {'PosErr':>8s} │ {'Thrust':>7s} │ {'Solve':>9s} │ {'Iters':>5s} │ Status")
-    print(f"  {'─'*6}─┼─{'─'*8}─┼─{'─'*7}─┼─{'─'*9}─┼─{'─'*5}─┼─{'─'*10}")
+    print(f"  {'Time':>6s} | {'PosErr':>8s} | {'Thrust':>7s} | {'Solve':>9s} | {'Iters':>5s} | Status")
+    print(f"  {'-'*6}-+-{'-'*8}-+-{'-'*7}-+-{'-'*9}-+-{'-'*5}-+-{'-'*10}")
     
     for i in range(total_steps):
         ref_window = np.zeros((12, N + 1))
@@ -354,10 +346,10 @@ def run_c_admm_sim(mode='fig8', duration=10.0):
             t_now = (i + 1) * dt
             pos_err = np.linalg.norm(x_log[0:3, i+1] - ref[0:3, min(i+1, N_ref-1)])
             solve_us = info['solve_time_us']
-            print(f"  {t_now:5.1f}s │ {pos_err*100:7.2f}cm │ "
-                  f"{u_opt[0]*1000:6.1f}mN │ "
-                  f"{solve_us:7.1f} μs │ "
-                  f"{info['iterations']:5d} │ {info['status']}")
+            print(f"  {t_now:5.1f}s | {pos_err*100:7.2f}cm | "
+                  f"{u_opt[0]*1000:6.1f}mN | "
+                  f"{solve_us:7.1f} us | "
+                  f"{info['iterations']:5d} | {info['status']}")
     
     # Results
     tracking_err = np.linalg.norm(
@@ -366,14 +358,12 @@ def run_c_admm_sim(mode='fig8', duration=10.0):
     solve_times_us = np.array(solver.solve_times) * 1e6
     iters = np.array(solver.iterations_log)
     
-    print(f"\n{'='*65}")
-    print(f"  Results (C ADMM with gcc -O3):")
+    print(f"\n  Results (C ADMM with gcc -O3):")
     print(f"    RMSE tracking error:  {rmse*100:.2f} cm")
-    print(f"    Avg solve time:       {np.mean(solve_times_us):.1f} μs")
-    print(f"    Median solve time:    {np.median(solve_times_us):.1f} μs")
-    print(f"    Max solve time:       {np.max(solve_times_us):.1f} μs")
-    print(f"    Avg iterations:       {np.mean(iters):.1f}")
-    print(f"{'='*65}\n")
+    print(f"    Avg solve time:       {np.mean(solve_times_us):.1f} us")
+    print(f"    Median solve time:    {np.median(solve_times_us):.1f} us")
+    print(f"    Max solve time:       {np.max(solve_times_us):.1f} us")
+    print(f"    Avg iterations:       {np.mean(iters):.1f}\n")
     
     return x_log, u_log, ref, solver, tracking_err
 

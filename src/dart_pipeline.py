@@ -1,40 +1,13 @@
-"""
-dart_pipeline.py — Six-way comparison of imitation learning variants for the
-quadrotor MPC distillation problem.
+"""dart_pipeline.py -- six-way comparison of imitation-learning variants.
 
-Variants
---------
-  BC                  : behavioral cloning only (5 expert episodes)
-  BC + DART(fixed)    : BC with fixed-sigma action-space noise during demonstration
-  BC + DART(adapt)    : BC with adaptive Sigma_hat estimated from BC residuals
-                        on expert states (Laskey et al. CoRL 2017, Alg 1)
-  DAgger              : standard DAgger (5 iters x 3 episodes, student rollouts,
-                        expert relabel)
-  DAgger + DART(fixed): like DAgger but expert rollouts are noisy (sigma fixed)
-  DAgger + DART(adapt): like DAgger but expert rollouts inject Sigma_hat that
-                        is updated each iteration from current student error
+Compares BC, BC + DART (fixed/adaptive noise), DAgger, and DAgger + DART
+on the quadrotor MPC distillation problem. DART noise covariance is the
+diagonal MLE of (a_expert - a_student)^2 (Laskey et al., CoRL 2017),
+which expands the demonstrated state distribution toward what the student
+will visit without requiring on-policy rollouts.
 
-Reference
----------
-Laskey, M., Lee, J., Fox, R., Dragan, A., Goldberg, K. (2017). "DART: Noise
-Injection for Robust Imitation Learning." CoRL 2017.
-
-The covariance update is the maximum-likelihood estimate of the diagonal action
-covariance from student-vs-expert residuals on the current dataset:
-
-  Sigma_hat = (1 / N) * sum_i (a_expert_i - a_student_i)^2     (element-wise)
-
-When student is good, sigma shrinks; when student is bad, sigma is large. This
-moves the data distribution toward states the student will visit at test time
-without requiring on-policy student rollouts (which DAgger needs).
-
-Hyper-parameters held fixed
----------------------------
-  5 expert episodes (per cycle)
-  3 dagger episodes per iter (for variants that use student rollouts)
-  100 BC epochs / 50 dagger epochs
-  Adam lr 1e-3, batch 256
-  Same env, same expert (tuned C ADMM), same evaluation
+Run from the repository root:
+    python3 src/dart_pipeline.py
 """
 import sys, os, time, json
 sys.path.insert(0, '.')
@@ -123,8 +96,7 @@ def estimate_sigma_hat(obs_data, act_data, policy):
     return np.sqrt(np.mean(diff**2, axis=0)).astype(np.float32)  # std-dev per dim
 
 
-# ─────────────────────────────────────────────────────────────────
-# Runner
+# ---- Runner --------------------------------------------------------------
 
 def make_policy():
     p = PolicyNet(obs_dim=20, act_dim=4, hidden=64).to(device)
@@ -145,13 +117,13 @@ def run_variant(name, env, expert, *,
                 use_dagger=False,
                 n_expert_eps=5, n_dagger_eps=3, n_dagger_iters=5,
                 bc_epochs=100, dagger_epochs=50):
-    print(f"\n{'='*72}\n  Variant: {name}\n{'='*72}")
+    print(f"\n[variant] {name}")
     policy = make_policy()
     opt = optim.Adam(policy.parameters(), lr=1e-3)
     history = {'name': name, 'rmse_per_iter': [], 'loss_per_iter': [],
                'sigmas': []}
 
-    # ─── Phase 1: Expert demonstrations (possibly DART-noisy) ───
+    # ---- Phase 1: expert demonstrations (possibly DART-noisy) --------
     sigma = sigma_init if use_dart else None
     if use_dart and dart_mode == 'adaptive':
         # Start with fixed sigma; will refine after BC
@@ -168,7 +140,7 @@ def run_variant(name, env, expert, *,
     obs_buf, act_buf = collect_expert_episodes(env, expert, n_expert_eps, noise=noise_arg)
     print(f"  Got {len(obs_buf)} samples ({time.time()-t0:.1f}s)")
 
-    # ─── Phase 2: Behavioral cloning ───
+    # ---- Phase 2: behavioral cloning ---------------------------------
     print(f"  Step 2: BC for {bc_epochs} epochs ...")
     losses = train_policy(policy, opt, obs_buf, act_buf, device,
                           epochs=bc_epochs, batch_size=256)
@@ -195,7 +167,7 @@ def run_variant(name, env, expert, *,
             print(f"  After BC+DART(adapt) | Policy: {ss_p:.1f}mm | loss {losses[-1]:.4f}")
         return policy, history
 
-    # ─── Phase 3 (DAgger): iterate student-rollout + expert-relabel ───
+    # ---- Phase 3 (DAgger): iterate student-rollout + expert-relabel --
     for k in range(n_dagger_iters):
         print(f"\n  DAgger iter {k+1}/{n_dagger_iters}")
         if use_dart and dart_mode == 'adaptive':
@@ -223,8 +195,7 @@ def run_variant(name, env, expert, *,
     return policy, history
 
 
-# ──────────────────────────────────────────────────────────────────
-# Run all 6 variants
+# ---- Run all six variants ------------------------------------------------
 if __name__ == '__main__':
     env = CrazyflieTrackingEnv(dt=0.01, episode_length=10.0)
     expert = MPCExpert(dt=0.01)
@@ -252,10 +223,8 @@ if __name__ == '__main__':
         torch.save(policy.state_dict(), results_dir / f'policy_{slug}.pt')
         print(f"\n  Saved {results_dir / f'policy_{slug}.pt'}  (variant took {elapsed:.0f}s)")
 
-    # ─── Print summary ───
-    print("\n" + "="*72)
-    print("  FINAL SUMMARY (steady-state RMSE after 2s warmup)")
-    print("="*72)
+    # ---- Print summary ---------
+    print("\n  FINAL SUMMARY (steady-state RMSE after 2s warmup)")
     print(f"  {'Variant':<35s} | {'Policy':>9s} | {'Expert':>9s} | Time")
     print(f"  {'-'*35}-+-{'-'*9}-+-{'-'*9}-+-{'-'*8}")
     for name, ssp, sse, t in summary:

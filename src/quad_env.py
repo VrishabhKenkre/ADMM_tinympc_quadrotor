@@ -1,21 +1,7 @@
-"""
-quad_env.py — MuJoCo Crazyflie 2 Environment
-=============================================
-Clean simulation wrapper for the Menagerie Crazyflie 2 model.
-Provides both a raw simulation interface (for MPC) and a
-Gymnasium-compatible interface (for RL).
+"""quad_env.py -- MuJoCo Crazyflie 2 simulation wrapper.
 
-Model: Bitcraze Crazyflie 2 (google-deepmind/mujoco_menagerie)
-  Mass:    0.027 kg
-  Inertia: Ixx=Iyy=2.3951e-5, Izz=3.2347e-5 kg·m²
-  Actuators: [body_thrust (0-0.35N), x_moment, y_moment, z_moment (±1e-5 N·m)]
-  State: qpos[7] = [x,y,z, qw,qx,qy,qz], qvel[6] = [vx,vy,vz, wx,wy,wz]
-
-References:
-  - Landry (2015), "Planning and Control for Quadrotor Flight through
-    Cluttered Environments", MIT MS Thesis (system identification)
-  - Nguyen et al. (ICRA 2024), "TinyMPC: Model-Predictive Control on
-    Resource-Constrained Microcontrollers" (MPC on Crazyflie)
+Wraps the Menagerie bitcraze_crazyflie_2 model with both a raw simulation
+interface (for MPC) and helpers for building reference trajectories.
 """
 
 import numpy as np
@@ -24,9 +10,7 @@ from pathlib import Path
 from typing import Optional, Tuple, Dict
 from scipy.spatial.transform import Rotation
 
-# ═══════════════════════════════════════════════════════════════
-# PHYSICAL CONSTANTS
-# ═══════════════════════════════════════════════════════════════
+# ---- Physical constants --------------------------------------------------
 
 MASS = 0.027                    # kg
 G = 9.81                        # m/s²
@@ -36,12 +20,12 @@ IZZ = 3.2347e-5                 # kg·m²
 
 # Actuator limits
 THRUST_MIN = 0.0                # N
-THRUST_MAX = 0.60               # N (TWR ≈ 2.27, realistic for CF2)
+THRUST_MAX = 0.60               # N (TWR ~ 2.27, realistic for CF2)
 TORQUE_RP_MAX = 0.0069          # N·m roll/pitch (arm × motor_thrust = 0.046 × 0.15)
 TORQUE_YAW_MAX = 0.0036         # N·m yaw (reactive torque coefficient)
 
 # Derived
-THRUST_TO_WEIGHT = THRUST_MAX / HOVER_THRUST  # ≈ 1.32
+THRUST_TO_WEIGHT = THRUST_MAX / HOVER_THRUST  # ~ 1.32
 
 
 class CrazyflieEnv:
@@ -164,7 +148,7 @@ class CrazyflieEnv:
         quat = self.data.qpos[3:7].copy()    # [w, x, y, z]
         omega = self.data.qvel[3:6].copy()   # body frame angular velocity
         
-        # Quaternion → Euler (ZYX convention: yaw-pitch-roll)
+        # Quaternion -> Euler (ZYX convention: yaw-pitch-roll)
         euler = self._quat_to_euler(quat)
         
         return np.concatenate([pos, vel, euler, omega])
@@ -173,14 +157,14 @@ class CrazyflieEnv:
         """Current simulation time [s]."""
         return self.data.time
     
-    # ─── Internal helpers ───
+    # ---- Internal helpers --------------------------------------------
     
     def _u_to_ctrl(self, u: np.ndarray) -> np.ndarray:
         """Convert physical units to MuJoCo ctrl.
         
         MuJoCo actuators: force = gear * ctrl
-          body_thrust: gear=+1,    ctrl=[0, 0.35] → force [0, 0.35] N
-          x_moment:    gear=-1e-5, ctrl=[-1, 1]   → torque [-1e-5, 1e-5] N·m
+          body_thrust: gear=+1,    ctrl=[0, 0.35] -> force [0, 0.35] N
+          x_moment:    gear=-1e-5, ctrl=[-1, 1]   -> torque [-1e-5, 1e-5] N*m
         
         So: ctrl[0] = thrust (direct, gear=+1)
             ctrl[1:4] = torque / gear = torque / (-1e-5) = -torque * 1e5
@@ -189,19 +173,19 @@ class CrazyflieEnv:
         """
         ctrl = np.zeros(4)
         ctrl[0] = u[0]                        # thrust (gear = +1)
-        ctrl[1] = -u[1] / 0.0069             # τx → ctrl (gear = -0.0069)
-        ctrl[2] = -u[2] / 0.0069             # τy → ctrl (gear = -0.0069)
-        ctrl[3] = -u[3] / 0.0036             # τz → ctrl (gear = -0.0036)
+        ctrl[1] = -u[1] / 0.0069             # tau_x -> ctrl (gear = -0.0069)
+        ctrl[2] = -u[2] / 0.0069             # tau_y -> ctrl (gear = -0.0069)
+        ctrl[3] = -u[3] / 0.0036             # tau_z -> ctrl (gear = -0.0036)
         return ctrl
     
     @staticmethod
     def _quat_to_euler(q: np.ndarray) -> np.ndarray:
-        """Quaternion [w,x,y,z] → Euler [roll, pitch, yaw] (ZYX).
-        
+        """Quaternion [w,x,y,z] -> Euler [roll, pitch, yaw] (ZYX).
+
         Standard aerospace convention:
-          roll  (φ) = rotation about x
-          pitch (θ) = rotation about y
-          yaw   (ψ) = rotation about z
+          roll  (phi)   = rotation about x
+          pitch (theta) = rotation about y
+          yaw   (psi)   = rotation about z
         """
         w, x, y, z = q
         
@@ -224,7 +208,7 @@ class CrazyflieEnv:
     
     @staticmethod
     def euler_to_quat(rpy: np.ndarray) -> np.ndarray:
-        """Euler [roll, pitch, yaw] → Quaternion [w,x,y,z] (ZYX)."""
+        """Euler [roll, pitch, yaw] -> Quaternion [w,x,y,z] (ZYX)."""
         phi, theta, psi = rpy
         
         cy, sy = np.cos(psi/2), np.sin(psi/2)
@@ -239,9 +223,7 @@ class CrazyflieEnv:
         return np.array([w, x, y, z])
 
 
-# ═══════════════════════════════════════════════════════════════
-# TRAJECTORY GENERATORS
-# ═══════════════════════════════════════════════════════════════
+# ---- Trajectory generators -----------------------------------------------
 
 def generate_hover_reference(target: np.ndarray, duration: float, 
                               dt: float) -> np.ndarray:
@@ -253,7 +235,7 @@ def generate_hover_reference(target: np.ndarray, duration: float,
         dt: timestep [s]
     
     Returns:
-        ref_traj: [12 × N] reference trajectory
+        ref_traj: [12 x N] reference trajectory
     """
     N = int(duration / dt)
     ref = np.zeros((12, N))
@@ -265,8 +247,8 @@ def generate_figure8_reference(center: np.ndarray, radius: float,
                                 height: float, period: float,
                                 duration: float, dt: float) -> np.ndarray:
     """Figure-8 trajectory in the XY plane at constant height.
-    
-    Parametric: x(t) = r·sin(ωt), y(t) = r·sin(2ωt)/2
+
+    Parametric: x(t) = r*sin(omega*t), y(t) = r*sin(2*omega*t)/2
     
     Args:
         center: [x0, y0] center of figure-8
@@ -298,7 +280,7 @@ def generate_helix_reference(center: np.ndarray, radius: float,
                               z_start: float, z_end: float,
                               period: float, duration: float,
                               dt: float) -> np.ndarray:
-    """Helical trajectory — circle in XY with linear Z climb.
+    """Helical trajectory -- circle in XY with linear Z climb.
     
     Args:
         center: [x0, y0] circle center

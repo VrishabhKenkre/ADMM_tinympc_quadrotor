@@ -1,32 +1,13 @@
 """
-mpc_osqp.py — Linear MPC with OSQP Solver
-============================================
-Sparse QP formulation for quadrotor trajectory tracking.
+mpc_osqp.py -- linear MPC with the OSQP solver, sparse formulation.
 
-This is Day 3-4 of the project. We take the LQR baseline from Day 1-2
-and replace it with a proper MPC that:
-  - Looks N steps into the future (preview)
-  - Respects actuator limits (thrust, torque bounds)
-  - Respects state constraints (tilt angle limits)
-  - Uses warm starting for real-time performance
+Decision variable z = [x[0..N], u[0..N-1]]. The Hessian is block-diagonal
+in (Q, P_terminal, R) and the constraint matrix encodes dynamics
+equalities, the initial condition, and state/control box bounds. Solved
+with OSQP's ADMM + warm starting for real-time use.
 
-QP Formulation (sparse):
-  Decision variables:  z = [x[0], x[1], ..., x[N], u[0], ..., u[N-1]]
-  
-  minimize    ½ z' H z + f' z
-  subject to  l ≤ A z ≤ u
-  
-  where:
-    H = block_diag(Q, Q, ..., P, R, R, ..., R)   ← cost Hessian
-    f = [-Q·xref[0], ..., -P·xref[N], 0, ..., 0]  ← linear cost (from reference)
-    A encodes: dynamics equalities + initial condition + bounds
-
-References:
-  - Stellato et al. (2020), "OSQP: An Operator Splitting Solver for QPs"
-  - Di Carlo et al. (IROS 2018), sparse MPC formulation for MIT Cheetah
-  - Nguyen et al. (ICRA 2024), "TinyMPC" — ADMM-based MPC on Crazyflie
-
-Author: Vrishabh Kenkre (CMU MS MechE)
+Run from the repository root:
+    python3 src/mpc_osqp.py [mode] [duration]
 """
 
 import numpy as np
@@ -42,17 +23,17 @@ from typing import Optional, Tuple
 class MPCParams:
     """MPC configuration parameters."""
     N: int = 20              # prediction horizon
-    dt: float = 0.02         # control timestep [s]  → 50 Hz
+    dt: float = 0.02         # control timestep [s], 50 Hz
     
     # Cost weights (diagonal entries)
-    # State: [px, py, pz, vx, vy, vz, φ, θ, ψ, ωx, ωy, ωz]
+    # State: [px, py, pz, vx, vy, vz, phi, theta, psi, wx, wy, wz]
     Q_diag: np.ndarray = None   # stage cost on states
     R_diag: np.ndarray = None   # stage cost on controls
     
     # State constraints (angle limits to keep linearization valid)
     phi_max: float = np.radians(30)     # max roll [rad]
     theta_max: float = np.radians(30)   # max pitch [rad]
-    
+
     def __post_init__(self):
         if self.Q_diag is None:
             self.Q_diag = np.array([
@@ -72,21 +53,17 @@ class OSQP_MPC:
     """Linear Model Predictive Controller using OSQP.
     
     Builds the sparse QP once, then updates only f, l, u each timestep.
-    The sparsity pattern of H and A never changes — only the values
-    of the reference trajectory and initial state change.
-    
-    Decision variable layout:
-        z = [x[0], x[1], ..., x[N], u[0], u[1], ..., u[N-1]]
-             ^^^^^^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^^
-             (N+1) × nx = 252 entries     N × nu = 80 entries
-             
-        Total: (N+1)×nx + N×nu = 332 entries for N=20, nx=12, nu=4
-    
+    The sparsity pattern of H and A never changes; only the reference
+    trajectory and initial state are updated.
+
+    Decision variable z = [x[0..N], u[0..N-1]]: (N+1)*nx + N*nu = 332
+    entries for N=20, nx=12, nu=4.
+
     Constraint layout in A:
-        Row block 1: Dynamics equalities     (N × nx = 240 rows)
-        Row block 2: Initial condition       (nx = 12 rows)
-        Row block 3: State bounds            ((N+1) × nx = 252 rows)  
-        Row block 4: Control bounds          (N × nu = 80 rows)
+      - Dynamics equalities  (N*nx = 240 rows)
+      - Initial condition    (nx = 12 rows)
+      - State bounds         ((N+1)*nx = 252 rows)
+      - Control bounds       (N*nu = 80 rows)
     """
     
     def __init__(self, Ad: np.ndarray, Bd: np.ndarray,
@@ -95,8 +72,8 @@ class OSQP_MPC:
                  params: MPCParams = None):
         """
         Args:
-            Ad: discrete A matrix [nx × nx]
-            Bd: discrete B matrix [nx × nu]
+            Ad: discrete A matrix [nx x nx]
+            Bd: discrete B matrix [nx x nu]
             u_min: control lower bounds [nu]
             u_max: control upper bounds [nu]
             u_hover: hover control (for delta-u formulation) [nu]
@@ -127,7 +104,7 @@ class OSQP_MPC:
         self.Q = Q
         self.R = R
         
-        # Build the QP matrices (done once — sparsity pattern is fixed)
+        # Build the QP matrices (done once; sparsity pattern is fixed)
         self._build_qp()
         
         # Setup OSQP solver
@@ -148,19 +125,9 @@ class OSQP_MPC:
         """
         N, nx, nu = self.N, self.nx, self.nu
         n_dec = self.n_dec
-        
-        # ═══════════════════════════════════════════════
-        # COST MATRIX H (block-diagonal, very sparse)
-        # ═══════════════════════════════════════════════
-        #
-        # H = block_diag(Q, Q, ..., Q, P, R, R, ..., R)
-        #     ^^^^^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^
-        #     (N+1) state blocks          N control blocks
-        #
-        # H is n_dec × n_dec but has only nx² × (N+1) + nu² × N
-        # nonzero entries ≈ 12²×21 + 4²×20 = 3344 out of 332² = 110,224
-        # That's 97% zeros!
-        
+
+        # ---- Cost matrix H (block-diagonal, ~97% zeros) ------------------
+        # H = block_diag(Q, ..., Q, P_terminal, R, ..., R)
         H_blocks = []
         
         # State cost blocks: Q for steps 0 to N-1, P for step N
@@ -175,45 +142,19 @@ class OSQP_MPC:
         # Assemble block-diagonal H
         self.H = sparse.block_diag(H_blocks, format='csc')
         
-        # ═══════════════════════════════════════════════
-        # LINEAR COST f (depends on reference — updated each solve)
-        # ═══════════════════════════════════════════════
-        #
-        # f = [-Q·xref[0], -Q·xref[1], ..., -P·xref[N], 0, ..., 0]
-        #
-        # Initialized to zero, updated in solve() with actual reference
-        
+        # ---- Linear cost f (depends on reference; updated each solve) ----
+        # f = [-Q xref[0], ..., -P_terminal xref[N], 0, ..., 0]
         self.f = np.zeros(n_dec)
-        
-        # ═══════════════════════════════════════════════
-        # CONSTRAINT MATRIX A
-        # ═══════════════════════════════════════════════
-        #
-        # Four blocks of constraints, stacked vertically:
-        #
-        # Block 1: Dynamics — x[k+1] = Ad·x[k] + Bd·u[k]
-        #   Rewritten: x[k+1] - Ad·x[k] - Bd·u[k] = 0
-        #   Each row: [..., -Ad, I, ..., ..., -Bd, ...]
-        #   N×nx rows, n_dec columns
-        #
-        # Block 2: Initial condition — x[0] = x_measured
-        #   Each row: [I, 0, ..., 0, ..., 0]
-        #   nx rows, n_dec columns
-        #
-        # Block 3: State bounds — x_min ≤ x[k] ≤ x_max
-        #   Identity on state portion
-        #   (N+1)×nx rows
-        #
-        # Block 4: Control bounds — u_min ≤ u[k] ≤ u_max
-        #   Identity on control portion
-        #   N×nu rows
-        
-        # --- Block 1: Dynamics equality constraints ---
-        # For each k = 0, ..., N-1:
-        #   [0...0, -Ad, I, 0...0, 0...0, -Bd, 0...0] · z = 0
-        #           ^x[k] ^x[k+1]         ^u[k]
-        
-        # Build using triplet format (row, col, value)
+
+        # ---- Constraint matrix A -----------------------------------------
+        # Four blocks stacked vertically:
+        #   1) Dynamics equalities  (N*nx rows): x[k+1] - Ad x[k] - Bd u[k] = 0
+        #   2) Initial condition    (nx rows)  : x[0] = x_measured
+        #   3) State bounds         ((N+1)*nx) : identity on state portion
+        #   4) Control bounds       (N*nu)     : identity on control portion
+
+        # Block 1: Dynamics equality constraints.
+        # Triplet format (row, col, value).
         rows_dyn = []
         cols_dyn = []
         vals_dyn = []
@@ -248,7 +189,7 @@ class OSQP_MPC:
         
         n_dyn_rows = N * nx  # 240
         
-        # --- Block 2: Initial condition x[0] = x_measured ---
+        # Block 2: Initial condition x[0] = x_measured.
         rows_ic = []
         cols_ic = []
         vals_ic = []
@@ -260,7 +201,7 @@ class OSQP_MPC:
         
         n_ic_rows = nx  # 12
         
-        # --- Block 3: State bounds (identity on state portion) ---
+        # Block 3: State bounds (identity on state portion).
         rows_xb = []
         cols_xb = []
         vals_xb = []
@@ -274,7 +215,7 @@ class OSQP_MPC:
         
         n_xb_rows = (N + 1) * nx  # 252
         
-        # --- Block 4: Control bounds (identity on control portion) ---
+        # Block 4: Control bounds (identity on control portion).
         rows_ub = []
         cols_ub = []
         vals_ub = []
@@ -288,7 +229,7 @@ class OSQP_MPC:
         
         n_ub_rows = N * nu  # 80
         
-        # --- Assemble A ---
+        # Assemble A.
         total_rows = n_dyn_rows + n_ic_rows + n_xb_rows + n_ub_rows
         
         all_rows = rows_dyn + rows_ic + rows_xb + rows_ub
@@ -300,15 +241,10 @@ class OSQP_MPC:
             shape=(total_rows, n_dec)
         )
         
-        # ═══════════════════════════════════════════════
-        # BOUNDS l, u (updated each solve for initial condition)
-        # ═══════════════════════════════════════════════
-        
-        # Block 1: Dynamics — equality: l = u = d (gravity offset)
-        # The linearized dynamics in absolute coordinates is:
-        #   x[k+1] = Ad·x[k] + Bd·u[k] + d
-        # where d = (I - Ad)·x_hover - Bd·u_hover encodes gravity.
-        # Without d, the MPC model has no gravity and won't apply thrust!
+        # ---- Bounds l, u (initial-condition entries refreshed each solve) -
+        # Block 1: Dynamics: equality l = u = d (gravity offset).
+        #   x[k+1] = Ad x[k] + Bd u[k] + d, with d = (I - Ad) x_hover - Bd u_hover.
+        # Without d, the MPC model has no gravity and won't apply thrust.
         x_hover = np.zeros(nx)  # position cancels, all other states = 0
         d = (np.eye(nx) - self.Ad) @ x_hover - self.Bd @ self.u_hover
         self._gravity_offset = d
@@ -321,11 +257,9 @@ class OSQP_MPC:
         l_ic = np.zeros(n_ic_rows)
         u_ic = np.zeros(n_ic_rows)
         
-        # Block 3: State bounds
-        # Position: unbounded (±∞)
-        # Velocity: unbounded
-        # Euler angles: φ ∈ [-30°, +30°], θ ∈ [-30°, +30°], ψ unbounded
-        # Angular rates: unbounded
+        # Block 3: State bounds.
+        # Position, velocity, yaw, angular rates: unbounded.
+        # Roll and pitch are limited to keep the linearization valid.
         INF = 1e10  # OSQP uses finite bounds, not np.inf
         x_lb = np.array([-INF, -INF, -INF,      # position
                          -INF, -INF, -INF,       # velocity
@@ -387,25 +321,21 @@ class OSQP_MPC:
     def solve(self, x_current: np.ndarray, 
               x_ref: np.ndarray) -> Tuple[np.ndarray, dict]:
         """Solve the MPC QP for one timestep.
-        
+
         Args:
             x_current: current measured state [nx]
-            x_ref: reference trajectory [nx × (N+1)] — columns are states
-                   at times [t, t+dt, t+2dt, ..., t+N*dt]
-        
+            x_ref: reference trajectory [nx x (N+1)], columns at
+                   times [t, t+dt, t+2dt, ..., t+N*dt]
+
         Returns:
             u_opt: optimal control for current timestep [nu]
             info: dict with solve time, status, predicted trajectory
         """
         N, nx, nu = self.N, self.nx, self.nu
-        
-        # ═══ Update linear cost f (reference trajectory changed) ═══
-        #
-        # f = [-Q·xref[0], -Q·xref[1], ..., -P·xref[N], 0, ..., 0]
-        #
-        # Why negative? The cost ½z'Hz + f'z has minimum at z = -H⁻¹f.
-        # With H = Q and f = -Q·xref, the minimum is at z = xref. ✓
-        
+
+        # Update linear cost f (reference changed).
+        # f = [-Q xref[0], ..., -P_terminal xref[N], 0, ..., 0]; the negative sign
+        # places the unconstrained minimum at z = xref.
         for k in range(N):
             self.f[k*nx : (k+1)*nx] = -self.Q @ x_ref[:, k]
         self.f[N*nx : (N+1)*nx] = -self.P_terminal @ x_ref[:, N]
@@ -417,19 +347,18 @@ class OSQP_MPC:
             ctrl_start = (N+1)*nx + k*nu
             self.f[ctrl_start : ctrl_start + nu] = -self.R @ self.u_hover
         
-        # ═══ Update initial condition (x[0] = x_current) ═══
+        # Update initial condition (x[0] = x_current).
         self.l[self._ic_start : self._ic_end] = x_current
         self.u[self._ic_start : self._ic_end] = x_current
-        
-        # ═══ Warm start ═══
-        # Shift previous solution by one step as initial guess
+
+        # Warm start: shift previous solution by one step as the initial guess.
         if self._prev_z is not None:
             z_warm = np.zeros(self.n_dec)
-            # Shift states: x[1]→x[0], x[2]→x[1], ..., x[N]→x[N-1], repeat x[N]
+            # Shift states: x[1]->x[0], x[2]->x[1], ..., x[N]->x[N-1], repeat x[N]
             for k in range(N):
                 z_warm[k*nx : (k+1)*nx] = self._prev_z[(k+1)*nx : (k+2)*nx]
             z_warm[N*nx : (N+1)*nx] = self._prev_z[N*nx : (N+1)*nx]  # repeat last
-            # Shift controls: u[1]→u[0], ..., u[N-1]→u[N-2], repeat u[N-1]
+            # Shift controls: u[1]->u[0], ..., u[N-1]->u[N-2], repeat u[N-1]
             state_offset = (N+1) * nx
             for k in range(N-1):
                 z_warm[state_offset + k*nu : state_offset + (k+1)*nu] = \
@@ -439,7 +368,7 @@ class OSQP_MPC:
             
             self.solver.warm_start(x=z_warm)
         
-        # ═══ Update OSQP and solve ═══
+        # Update OSQP and solve.
         self.solver.update(q=self.f, l=self.l, u=self.u)
         
         t_start = time.perf_counter()
@@ -448,7 +377,7 @@ class OSQP_MPC:
         
         self.solve_times.append(t_solve)
         
-        # ═══ Extract solution ═══
+        # Extract solution.
         if result.info.status == 'solved' or result.info.status == 'solved_inaccurate':
             z_opt = result.x
             self._prev_z = z_opt  # store for warm starting
@@ -475,8 +404,8 @@ class OSQP_MPC:
                 'cost': result.info.obj_val
             }
         else:
-            # Solver failed — use hover as fallback
-            print(f"  ⚠ OSQP failed: {result.info.status}")
+            # Solver failed; use hover as a fallback.
+            print(f"  OSQP failed: {result.info.status}")
             u_opt = self.u_hover.copy()
             info = {
                 'status': result.info.status,
@@ -544,10 +473,7 @@ def run_mpc_sim(mode='fig8', duration=10.0):
     N_ref = ref.shape[1]
     
     # Build MPC
-    print(f"\n{'='*60}")
-    print(f"  OSQP MPC — {title}")
-    print(f"  Horizon: {N} steps ({N*dt:.1f}s), dt={dt*1000:.0f}ms")
-    print(f"{'='*60}\n")
+    print(f"\n[OSQP MPC] {title} -- horizon {N} steps ({N*dt:.1f}s), dt={dt*1000:.0f}ms\n")
     
     mpc = OSQP_MPC(Ad, Bd, p.u_min, p.u_max, 
                     np.array([p.hover_thrust, 0, 0, 0]), mpc_params)
@@ -561,8 +487,8 @@ def run_mpc_sim(mode='fig8', duration=10.0):
     x_log[:, 0] = x0
     
     print(f"\n  Running {total_steps} steps...")
-    print(f"  {'Time':>6s} │ {'PosErr':>8s} │ {'Thrust':>7s} │ {'Solve':>7s} │ {'Iters':>5s} │ Status")
-    print(f"  {'─'*6}─┼─{'─'*8}─┼─{'─'*7}─┼─{'─'*7}─┼─{'─'*5}─┼─{'─'*10}")
+    print(f"  {'Time':>6s} | {'PosErr':>8s} | {'Thrust':>7s} | {'Solve':>7s} | {'Iters':>5s} | Status")
+    print(f"  {'-'*6}-+-{'-'*8}-+-{'-'*7}-+-{'-'*7}-+-{'-'*5}-+-{'-'*10}")
     
     for i in range(total_steps):
         # Build reference window: columns are x_ref at t, t+dt, ..., t+N*dt
@@ -582,14 +508,13 @@ def run_mpc_sim(mode='fig8', duration=10.0):
         if (i + 1) % int(1.0 / dt) == 0:
             t_now = (i + 1) * dt
             pos_err = np.linalg.norm(x_log[0:3, i+1] - ref[0:3, min(i+1, N_ref-1)])
-            print(f"  {t_now:5.1f}s │ {pos_err*100:7.2f}cm │ "
-                  f"{u_opt[0]*1000:6.1f}mN │ "
-                  f"{info['solve_time']*1000:6.2f}ms │ "
-                  f"{info['iterations']:5d} │ {info['status']}")
+            print(f"  {t_now:5.1f}s | {pos_err*100:7.2f}cm | "
+                  f"{u_opt[0]*1000:6.1f}mN | "
+                  f"{info['solve_time']*1000:6.2f}ms | "
+                  f"{info['iterations']:5d} | {info['status']}")
     
-    # ═══ Results ═══
-    print(f"\n{'='*60}")
-    print(f"  Results:")
+    # ---- Results -----------------------------------------------------
+    print(f"\n  Results:")
     
     tracking_err = np.linalg.norm(
         x_log[0:3, :total_steps] - ref[0:3, :total_steps], axis=0)
@@ -602,8 +527,7 @@ def run_mpc_sim(mode='fig8', duration=10.0):
     print(f"    Max tracking error:   {max_err*100:.2f} cm")
     print(f"    Avg solve time:       {np.mean(solve_times)*1000:.2f} ms")
     print(f"    Max solve time:       {np.max(solve_times)*1000:.2f} ms")
-    print(f"    Mean iterations:      {np.mean([1 for _ in mpc.solve_times]):.0f}")
-    print(f"{'='*60}\n")
+    print(f"    Mean iterations:      {np.mean([1 for _ in mpc.solve_times]):.0f}\n")
     
     return x_log, u_log, ref, mpc, tracking_err, solve_times
 
@@ -619,7 +543,7 @@ def plot_mpc_results(x_log, u_log, ref, tracking_err, solve_times,
     t_ref = np.arange(N_ref) * dt
     
     fig, axes = plt.subplots(3, 3, figsize=(16, 12))
-    fig.suptitle('Crazyflie MPC — OSQP Solver Results\n'
+    fig.suptitle('Crazyflie MPC -- OSQP Solver Results\n'
                  'Sparse QP, N=20, 50 Hz', fontsize=13, fontweight='bold')
     
     # Row 1: Position tracking

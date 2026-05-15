@@ -1,12 +1,10 @@
 /*
- * policy_inference.c
- * ------------------
- * Implementation of the DAgger-distilled MLP forward pass.
+ * policy_inference.c -- DAgger-distilled MLP forward pass.
  *
  * Architecture: 20 -> 64 -> 64 -> 4, ReLU x2, tanh out, no LayerNorm.
  *
- * Build:  gcc -O3 -ffast-math -march=native -fPIC -shared
- *               policy_inference.c -o libpolicy_inference.so -lm
+ * Build: gcc -O3 -ffast-math -march=native -fPIC -shared
+ *            policy_inference.c -o libpolicy_inference.so -lm
  */
 
 #include "policy_inference.h"

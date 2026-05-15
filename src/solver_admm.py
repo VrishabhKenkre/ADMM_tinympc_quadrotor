@@ -1,30 +1,13 @@
 """
-solver_admm.py — Hand-Rolled ADMM Solver for MPC
-==================================================
-Implements the ADMM algorithm from scratch for solving the MPC QP.
-This is the centerpiece of the project — no solver libraries, every
-matrix multiply written explicitly.
+solver_admm.py -- pure-Python hand-rolled ADMM solver for MPC.
 
-The approach follows TinyMPC (Nguyen et al., ICRA 2024 Best Paper):
-  1. Offline: Solve the Riccati recursion once → cache P_inf, K_inf, C1, C2
-  2. Online:  5-step ADMM iteration:
-     a) Backward pass (linear Riccati — only affine terms, matrices cached)
-     b) Forward pass  (rollout with cached K_inf)
-     c) Slack update  (project onto constraints = clamping)
-     d) Dual update   (standard ADMM)
-     e) Convergence check (primal + dual residuals)
+Follows TinyMPC (Nguyen et al., ICRA 2024): solve the Riccati recursion
+once to cache P_inf, K_inf, C1, C2, then run the 5-step ADMM iteration
+(backward, forward, slack/clamp, dual, convergence). Only matrix-vector
+products online; no inversions.
 
-Key insight: The Riccati matrices converge to infinite-horizon values
-because the cost (Q, R) and dynamics (Ad, Bd) are time-invariant.
-This means NO matrix inversions online — only matrix-vector products.
-
-References:
-  - Nguyen et al. (ICRA 2024), "TinyMPC" — this is our primary reference
-  - Boyd et al. (2011), "Distributed Optimization and Statistical Learning
-    via ADMM" — the ADMM framework
-  - Stellato et al. (2020), "OSQP" — ADMM for general QPs (what we compare against)
-
-Author: Vrishabh Kenkre (CMU MS MechE)
+Run from the repository root:
+    python3 src/solver_admm.py [mode] [duration]
 """
 
 import numpy as np
@@ -49,26 +32,11 @@ class ADMMParams:
 
 class ADMMSolver:
     """Hand-rolled ADMM for MPC.
-    
-    Solves the MPC QP:
-        minimize  Σ(k=0..N-1) [½||x_k - xref_k||²_Q + ½||u_k - uref_k||²_R]
-                  + ½||x_N - xref_N||²_P
-        subject to  x_{k+1} = Ad x_k + Bd u_k + d    (dynamics)
-                    x_min ≤ x_k ≤ x_max               (state bounds)
-                    u_min ≤ u_k ≤ u_max               (control bounds)
-    
-    ADMM reformulation:
-        We introduce slack variables (z_x, z_u) that must satisfy constraints,
-        and enforce z = (x, u) via ADMM consensus:
-        
-        minimize  cost(x, u) + I_constraints(z_x, z_u)
-        subject to  x_k = z_x_k,  u_k = z_u_k  for all k
-        
-        where I is the indicator function (0 if feasible, ∞ otherwise).
-    
-    The augmented Lagrangian is:
-        L_ρ = cost(x,u) + I(z) + Σ_k [y_x_k'(x_k - z_x_k) + ρ/2 ||x_k - z_x_k||²
-                                     + y_u_k'(u_k - z_u_k) + ρ/2 ||u_k - z_u_k||²]
+
+    Solves the standard linear-MPC QP (quadratic cost over (x_k - xref_k),
+    (u_k - uref_k); linear dynamics x_{k+1} = Ad x_k + Bd u_k + d; box
+    bounds on x and u) via the ADMM consensus reformulation z_x = x, z_u = u,
+    where z is the slack copy constrained to the feasible box.
     """
     
     def __init__(self, Ad: np.ndarray, Bd: np.ndarray,
@@ -108,9 +76,7 @@ class ADMMSolver:
         self.params = params or ADMMParams()
         self.rho = self.params.rho
         
-        # ═══════════════════════════════════════════════════
-        # OFFLINE: Cache the Riccati matrices (done ONCE)
-        # ═══════════════════════════════════════════════════
+        # ---- Offline: cache the Riccati matrices (done once) -------------
         self._cache_riccati()
         
         # ADMM variable storage (warm-started between solves)
@@ -123,49 +89,35 @@ class ADMMSolver:
     
     def _cache_riccati(self):
         """Precompute the infinite-horizon Riccati matrices.
-        
-        The ADMM primal update requires solving a modified LQR problem
-        with augmented cost Q̃ = Q + ρI, R̃ = R + ρI. Since Q̃, R̃ are
-        time-invariant, the Riccati recursion converges to constant
-        matrices that we cache here.
-        
-        Cached matrices:
-            P_inf:  infinite-horizon cost-to-go (nx × nx)
-            K_inf:  optimal gain (nu × nx)
-            C1:     (R̃ + Bd' P_inf Bd)^{-1}  (nu × nu) — for backward pass
-            C2:     (Ad - Bd K_inf)'           (nx × nx) — for backward pass
-        
-        These are the ONLY matrices needed online. The entire ADMM
-        iteration uses only matrix-vector products with these cached matrices.
+
+        Solves the DARE with augmented cost Q_tilde = Q + rho*I,
+        R_tilde = R + rho*I, then caches P_inf, K_inf, C1, C2 so the
+        online ADMM loop is matvec-only.
         """
         nx, nu = self.nx, self.nu
         rho = self.rho
-        
-        # Augmented cost (ρI added for ADMM penalty)
+
+        # Augmented cost (rho*I added for ADMM penalty)
         Q_aug = self.Q + rho * np.eye(nx)
         R_aug = self.R + rho * np.eye(nu)
-        
-        # Solve DARE with augmented costs
-        # This gives the infinite-horizon Riccati solution P_inf
+
+        # DARE with augmented costs gives the infinite-horizon P_inf
         P_inf = solve_discrete_are(self.Ad, self.Bd, Q_aug, R_aug)
-        
-        # Optimal gain
-        # K_inf = (R̃ + Bd' P_inf Bd)^{-1} Bd' P_inf Ad
+
+        # K_inf = (R_tilde + Bd' P_inf Bd)^{-1} Bd' P_inf Ad
         BtPB = self.Bd.T @ P_inf @ self.Bd
         BtPA = self.Bd.T @ P_inf @ self.Ad
-        K_coeff = R_aug + BtPB            # (nu × nu) — this is the only inversion
-        
-        self.K_inf = np.linalg.solve(K_coeff, BtPA)   # nu × nx
+        K_coeff = R_aug + BtPB            # (nu x nu) -- the only inversion
+
+        self.K_inf = np.linalg.solve(K_coeff, BtPA)   # nu x nx
         self.P_inf = P_inf
-        
+
         # Cache matrices for the backward/forward pass
-        self.C1 = np.linalg.inv(K_coeff)              # (R̃ + Bd'P_inf Bd)^{-1}
-        self.C2 = (self.Ad - self.Bd @ self.K_inf).T   # (Ad - Bd K_inf)' = closed-loop A transposed
-        
-        # For the terminal step (uses P_terminal instead of P_inf for the last stage)
-        # In TinyMPC, they use P_inf for all stages including terminal.
-        # We follow the same approach for simplicity — the infinite-horizon
-        # approximation is accurate for N ≥ 10.
+        self.C1 = np.linalg.inv(K_coeff)              # (R_tilde + Bd'P_inf Bd)^{-1}
+        self.C2 = (self.Ad - self.Bd @ self.K_inf).T   # closed-loop A transposed
+
+        # TinyMPC uses P_inf for the terminal stage as well; the infinite-horizon
+        # approximation is accurate for N >= 10.
     
     def _init_variables(self):
         """Initialize ADMM primal, slack, and dual variables."""
@@ -189,8 +141,8 @@ class ADMMSolver:
         
         Args:
             x0: current state [nx]
-            x_ref: reference states [nx × (N+1)]
-            u_ref: reference controls [nu × N] (default: u_hover)
+            x_ref: reference states [nx x (N+1)]
+            u_ref: reference controls [nu x N] (default: u_hover)
         
         Returns:
             u_opt: optimal first control [nu]
@@ -203,28 +155,24 @@ class ADMMSolver:
         
         t_start = time.perf_counter()
         
-        # ═══ ADMM Iterations ═══
+        # ---- ADMM iterations ---------------------------------------------
         residuals = []
-        
+
         for iteration in range(self.params.max_iter):
-            
-            # ─── Step 1: Primal update (backward + forward Riccati) ───
-            # Minimize cost + dynamics + augmented Lagrangian over (x, u)
-            # This is an unconstrained LQR problem with modified linear terms
+
+            # Step 1: primal update (backward + forward Riccati).
+            # Unconstrained LQR with modified linear terms.
             self._primal_update(x0, x_ref, u_ref)
-            
-            # ─── Step 2: Slack update (projection onto constraints) ───
-            # z = project(x + y, constraint set)
-            # For box constraints, this is just clamping
+
+            # Step 2: slack update (projection onto constraints; clamping for boxes).
             z_x_old = self.z_x.copy()
             z_u_old = self.z_u.copy()
             self._slack_update()
-            
-            # ─── Step 3: Dual update ───
-            # y = y + (x - z)  (standard ADMM dual ascent)
+
+            # Step 3: dual update (standard ADMM dual ascent).
             self._dual_update()
-            
-            # ─── Step 4: Convergence check ───
+
+            # Step 4: convergence check
             pri_res_x = np.linalg.norm(self.x - self.z_x)
             pri_res_u = np.linalg.norm(self.u - self.z_u)
             dual_res_x = self.rho * np.linalg.norm(self.z_x - z_x_old)
@@ -246,8 +194,8 @@ class ADMMSolver:
             
             if pri_res < eps_pri and dual_res < eps_dual:
                 break
-            
-            # ─── Step 5: Adaptive ρ update ───
+
+            # Step 5: adaptive rho update
             if self.params.adaptive_rho and \
                (iteration + 1) % self.params.rho_update_interval == 0:
                 self._update_rho(pri_res, dual_res)
@@ -279,74 +227,43 @@ class ADMMSolver:
     def _primal_update(self, x0: np.ndarray, x_ref: np.ndarray,
                         u_ref: np.ndarray):
         """ADMM primal update: solve the unconstrained LQR subproblem.
-        
-        This is the core of the solver. We need to minimize:
-            Σ_k [½(x_k-xref_k)'Q(x_k-xref_k) + ½(u_k-uref_k)'R(u_k-uref_k)
-                 + ρ/2 ||x_k - z_x_k + y_x_k||² + ρ/2 ||u_k - z_u_k + y_u_k||²]
-        subject to: x_{k+1} = Ad x_k + Bd u_k + d,  x_0 = x0
-        
-        This is a standard LQR problem with modified linear cost terms.
-        The quadratic terms give Q̃ = Q + ρI, R̃ = R + ρI (captured in cached matrices).
-        The linear terms encode the reference AND the ADMM slack/dual variables.
-        
-        Solution via backward-forward Riccati:
-            Backward: compute affine terms p_k, d_k from k=N to k=0
-            Forward:  roll out x_k, u_k from k=0 to k=N-1
-        
-        With cached P_inf, K_inf, C1, C2, this is ONLY matrix-vector products.
-        No matrix inversions, no factorizations. This is the TinyMPC insight.
+
+        Standard LQR with modified linear cost; quadratic terms are
+        Q_tilde = Q + rho*I, R_tilde = R + rho*I (already baked into the
+        cached P_inf, K_inf, C1, C2). With these cached, the whole step is
+        matrix-vector products only.
         """
         N, nx, nu = self.N, self.nx, self.nu
         rho = self.rho
-        
-        # ─── Compute modified linear costs ───
-        # For states: q̃_k = -Q·xref_k + ρ·(y_x_k - z_x_k)
-        # For controls: r̃_k = -R·uref_k + ρ·(y_u_k - z_u_k)
+
+        # Modified linear costs:
+        #   q_tilde_k = -Q xref_k + rho (y_x_k - z_x_k)
+        #   r_tilde_k = -R uref_k + rho (y_u_k - z_u_k)
         q_tilde = np.zeros((nx, N + 1))
         r_tilde = np.zeros((nu, N))
-        
+
         for k in range(N):
             q_tilde[:, k] = -self.Q @ x_ref[:, k] + rho * (self.y_x[:, k] - self.z_x[:, k])
             r_tilde[:, k] = -self.R @ u_ref[:, k] + rho * (self.y_u[:, k] - self.z_u[:, k])
-        
-        # Terminal: use P_terminal for the reference, P_inf for the ADMM penalty
+
+        # Terminal: use P_inf for both reference scaling and ADMM penalty.
         q_tilde[:, N] = -self.P_inf @ x_ref[:, N] + rho * (self.y_x[:, N] - self.z_x[:, N])
-        
-        # ─── Backward pass: compute affine terms ───
-        # p_N = q̃_N  (terminal)
-        # d_k = C1 · (Bd' · p_{k+1} + r̃_k)
-        # p_k = q̃_k + C2 · p_{k+1} - K_inf' · r̃_k + (Ad - Bd K_inf)' · Bd' · ... 
-        #
-        # Simplified (using cached matrices):
-        #   d_k = C1 · (Bd' · p_{k+1} + r̃_k)
-        #   p_k = q̃_k + C2 · p_{k+1} - K_inf' · r̃_k
-        #
-        # But we also need to account for the gravity offset d in dynamics.
-        # With x_{k+1} = Ad x_k + Bd u_k + d, the backward pass gets an
-        # extra term from d flowing through p_{k+1}.
-        
+
+        # Backward pass: affine cost-to-go p and control corrections d_ctrl.
+        # Includes correction for the gravity offset d flowing through p_{k+1}.
         p = np.zeros((nx, N + 1))
-        d_ctrl = np.zeros((nu, N))  # affine control corrections
-        
+        d_ctrl = np.zeros((nu, N))
+
         p[:, N] = q_tilde[:, N]
-        
+
         for k in range(N - 1, -1, -1):
-            # Affine control correction
-            # d_k = C1 · (Bd' · (p_{k+1} + P_inf · d_gravity) + r̃_k)
             p_next_adjusted = p[:, k + 1] + self.P_inf @ self.d
             d_ctrl[:, k] = self.C1 @ (self.Bd.T @ p_next_adjusted + r_tilde[:, k])
-            
-            # Affine state cost-to-go
-            # p_k = q̃_k + C2 · (p_{k+1} + P_inf · d_gravity) - K_inf' · r̃_k
             p[:, k] = q_tilde[:, k] + self.C2 @ p_next_adjusted - self.K_inf.T @ r_tilde[:, k]
-        
-        # ─── Forward pass: roll out trajectory ───
-        # x_0 = x0  (given)
-        # u_k = -K_inf · x_k - d_k
-        # x_{k+1} = Ad · x_k + Bd · u_k + d_gravity
-        
+
+        # Forward pass: roll out x_0..x_N, u_0..u_{N-1}.
         self.x[:, 0] = x0
-        
+
         for k in range(N):
             self.u[:, k] = -self.K_inf @ self.x[:, k] - d_ctrl[:, k]
             self.x[:, k + 1] = self.Ad @ self.x[:, k] + self.Bd @ self.u[:, k] + self.d
@@ -393,25 +310,22 @@ class ADMMSolver:
             self.y_u[:, k] += self.u[:, k] - self.z_u[:, k]
     
     def _update_rho(self, pri_res: float, dual_res: float):
-        """Adaptive ρ update following OSQP's strategy.
-        
-        If primal residual >> dual: increase ρ (push harder on consensus)
-        If dual residual >> primal: decrease ρ (relax consensus)
-        
-        This balances convergence of primal and dual variables.
-        Without adaptive ρ, you might need to hand-tune ρ per problem.
+        """Adaptive rho update following OSQP's strategy.
+
+        Primal >> dual: increase rho (push harder on consensus).
+        Dual >> primal: decrease rho (relax consensus).
         """
         tau = 2.0  # scaling factor
         mu = 10.0  # threshold ratio
-        
+
         if pri_res > mu * dual_res:
             self.rho *= tau
-            self._cache_riccati()  # recompute cached matrices for new ρ
+            self._cache_riccati()  # recompute cached matrices for new rho
         elif dual_res > mu * pri_res:
             self.rho /= tau
             self._cache_riccati()
-        
-        # Clamp ρ to reasonable range
+
+        # Clamp rho to a reasonable range
         self.rho = np.clip(self.rho, self.params.rho_min, self.params.rho_max)
     
     def warm_start_shift(self):
@@ -496,10 +410,7 @@ def run_admm_sim(mode='fig8', duration=10.0):
     N_ref = ref.shape[1]
     
     # Create ADMM solver
-    print(f"\n{'='*60}")
-    print(f"  Hand-Rolled ADMM MPC — {title}")
-    print(f"  Horizon: {N} steps ({N*dt:.1f}s), dt={dt*1000:.0f}ms")
-    print(f"{'='*60}\n")
+    print(f"\n[ADMM MPC] {title} -- horizon {N} steps ({N*dt:.1f}s), dt={dt*1000:.0f}ms\n")
     
     solver = ADMMSolver(
         Ad, Bd, Q, R, P_terminal, N,
@@ -516,8 +427,8 @@ def run_admm_sim(mode='fig8', duration=10.0):
     u_log = np.zeros((4, total_steps))
     x_log[:, 0] = x
     
-    print(f"  {'Time':>6s} │ {'PosErr':>8s} │ {'Thrust':>7s} │ {'Solve':>7s} │ {'Iters':>5s} │ {'PriRes':>8s} │ Status")
-    print(f"  {'─'*6}─┼─{'─'*8}─┼─{'─'*7}─┼─{'─'*7}─┼─{'─'*5}─┼─{'─'*8}─┼─{'─'*10}")
+    print(f"  {'Time':>6s} | {'PosErr':>8s} | {'Thrust':>7s} | {'Solve':>7s} | {'Iters':>5s} | {'PriRes':>8s} | Status")
+    print(f"  {'-'*6}-+-{'-'*8}-+-{'-'*7}-+-{'-'*7}-+-{'-'*5}-+-{'-'*8}-+-{'-'*10}")
     
     for i in range(total_steps):
         # Build reference window
@@ -539,11 +450,11 @@ def run_admm_sim(mode='fig8', duration=10.0):
         if (i + 1) % int(1.0 / dt) == 0:
             t_now = (i + 1) * dt
             pos_err = np.linalg.norm(x_log[0:3, i+1] - ref[0:3, min(i+1, N_ref-1)])
-            print(f"  {t_now:5.1f}s │ {pos_err*100:7.2f}cm │ "
-                  f"{u_opt[0]*1000:6.1f}mN │ "
-                  f"{info['solve_time']*1000:6.2f}ms │ "
-                  f"{info['iterations']:5d} │ "
-                  f"{info['primal_residual']:.2e} │ {info['status']}")
+            print(f"  {t_now:5.1f}s | {pos_err*100:7.2f}cm | "
+                  f"{u_opt[0]*1000:6.1f}mN | "
+                  f"{info['solve_time']*1000:6.2f}ms | "
+                  f"{info['iterations']:5d} | "
+                  f"{info['primal_residual']:.2e} | {info['status']}")
     
     # Results
     tracking_err = np.linalg.norm(
@@ -552,14 +463,12 @@ def run_admm_sim(mode='fig8', duration=10.0):
     solve_times = np.array(solver.solve_times)
     iters = np.array(solver.iterations_log)
     
-    print(f"\n{'='*60}")
-    print(f"  Results:")
+    print(f"\n  Results:")
     print(f"    RMSE tracking error:  {rmse*100:.2f} cm")
     print(f"    Avg solve time:       {np.mean(solve_times)*1000:.2f} ms")
     print(f"    Max solve time:       {np.max(solve_times)*1000:.2f} ms")
     print(f"    Avg iterations:       {np.mean(iters):.1f}")
-    print(f"    Max iterations:       {np.max(iters)}")
-    print(f"{'='*60}\n")
+    print(f"    Max iterations:       {np.max(iters)}\n")
     
     return x_log, u_log, ref, solver, tracking_err, solve_times
 

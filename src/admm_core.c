@@ -1,22 +1,10 @@
-/**
- * admm_core.c — Hand-Rolled ADMM Solver Implementation
- * ======================================================
+/*
+ * admm_core.c -- hand-rolled ADMM solver implementation.
  *
- * Every matrix operation is written as explicit loops.
- * No BLAS, no Eigen, no dependencies. Just C and math.
+ * Matrices are row-major flat arrays (M[i*ncols + j]); trajectory arrays are
+ * column-major by timestep (x[k*NX + i] is the i-th state at time k).
  *
- * Memory layout:
- *   All matrices are ROW-MAJOR flat arrays.
- *   M[i][j] = M[i * ncols + j]
- *
- *   Trajectory arrays are COLUMN-MAJOR by timestep:
- *   x[:, k] = x[k * NX ... (k+1)*NX - 1]
- *   This means x[k*NX + i] = the i-th state at time k.
- *
- * Compilation:
- *   gcc -O3 -shared -fPIC -o libadmm.so admm_core.c -lm
- *
- * Author: Vrishabh Kenkre (CMU MS MechE)
+ * Compile: gcc -O3 -shared -fPIC -o libadmm.so admm_core.c -lm
  */
 
 #include "admm_core.h"
@@ -24,10 +12,7 @@
 #include <string.h>
 #include <time.h>
 
-/* ═══════════════════════════════════════════════════════════
- * LOW-LEVEL LINEAR ALGEBRA
- * All hand-written. Each function does ONE specific operation.
- * ═══════════════════════════════════════════════════════════ */
+/* ---- Low-level linear algebra --------- */
 
 /**
  * y = A * x,  where A is [rows × cols], x is [cols], y is [rows]
@@ -144,10 +129,7 @@ static void diag_vec_mul(const double *diag, const double *x, double *y, int n)
     }
 }
 
-/* ═══════════════════════════════════════════════════════════
- * ADMM STEPS
- * Each function implements one step of the ADMM iteration.
- * ═══════════════════════════════════════════════════════════ */
+/* ---- ADMM steps --------- */
 
 /**
  * Backward pass: compute affine cost-to-go p[] and control corrections d_ctrl[].
@@ -371,9 +353,7 @@ static void compute_residuals(const ADMMCache *c, const ADMMVars *v,
     *dual_res = c->rho * sqrt(dua);
 }
 
-/* ═══════════════════════════════════════════════════════════
- * PUBLIC FUNCTIONS
- * ═══════════════════════════════════════════════════════════ */
+/* ---- Public functions --------- */
 
 void admm_init(ADMMVars *vars)
 {
@@ -442,14 +422,14 @@ void admm_solve(const ADMMCache *cache, ADMMVars *vars,
 
 void admm_warm_shift(ADMMVars *vars)
 {
-    /* Shift states left: x[:,1:] → x[:,:-1], duplicate last */
+    /* Shift states left: x[:,1:] -> x[:,:-1], duplicate last */
     memmove(&vars->x[0], &vars->x[NX], NX * NHORIZON * sizeof(double));
     /* x[:,N] stays (already in place from memmove leaving last element) */
-    
+
     memmove(&vars->zx[0], &vars->zx[NX], NX * NHORIZON * sizeof(double));
     memmove(&vars->yx[0], &vars->yx[NX], NX * NHORIZON * sizeof(double));
-    
-    /* Shift controls left: u[:,1:] → u[:,:-1], duplicate last */
+
+    /* Shift controls left: u[:,1:] -> u[:,:-1], duplicate last */
     if (NHORIZON > 1) {
         memmove(&vars->u[0], &vars->u[NU], NU * (NHORIZON - 1) * sizeof(double));
         memmove(&vars->zu[0], &vars->zu[NU], NU * (NHORIZON - 1) * sizeof(double));

@@ -1,6 +1,9 @@
-"""
-tune_osqp.py — sweep OSQP knobs to find its speed/accuracy floor.
-Modifies the OSQP problem setup via direct call to osqp.update_settings.
+"""tune_osqp.py -- sweep OSQP knobs to find its speed/accuracy floor.
+
+Overrides solver settings post-setup via osqp.update_settings.
+
+Run from the repository root:
+    python3 src/tune_osqp.py
 """
 import sys, time, itertools
 sys.path.insert(0, '.')
@@ -88,7 +91,7 @@ for cfg in configs:
         print(f"FAILED {cfg}: {e}")
 
 # Pareto: filter out failures, find min RMSE*solve
-print("\nPareto frontier (min RMSE × solve product, no failures):")
+print("\nPareto frontier (min RMSE x solve product, no failures):")
 clean = [r for r in results if r['failures'] == 0]
 clean.sort(key=lambda r: r['rmse_mm'] * r['solve_us'])
 for r in clean[:5]:

@@ -1,15 +1,11 @@
 #!/usr/bin/env python3
-"""
-export_weights.py — Convert dagger_policy.pt → policy_weights.h.
+"""export_weights.py -- convert dagger_policy.pt into policy_weights.h.
 
-Architecture: 20 -> 64 -> 64 -> 4 MLP, no LayerNorm.
-Keys in state_dict (from dagger.py PolicyNet using nn.Sequential):
-    net.0.weight (64, 20), net.0.bias (64,)   — Linear 1
-    net.2.weight (64, 64), net.2.bias (64,)   — Linear 2
-    net.4.weight (4, 64),  net.4.bias (4,)    — Linear 3 (tanh output)
+PolicyNet is a 20 -> 64 -> 64 -> 4 MLP with no LayerNorm; the state_dict
+uses the nn.Sequential keys net.0/net.2/net.4 for the three Linear layers.
 
-Usage:
-    python export_weights.py path/to/dagger_policy.pt > src/policy_weights.h
+Run from the repository root:
+    python3 src/export_weights.py path/to/dagger_policy.pt > src/policy_weights.h
 """
 import sys, argparse
 import numpy as np
